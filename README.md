@@ -4,10 +4,10 @@ Batch-convert official ChatGPT/Claude export JSON into one markdown file per con
 
 ## Features
 - Parse `chatgpt` / `claude` export JSON (`--format auto` supported)
-- Write one `conv_<id>.md` per conversation
+- Write one `conv_<safe_id>.md` per conversation
 - Convert-only mode (`--skip-analysis`) with no API calls required
 - Batch call LLM API for either default summary schema or strict residue-salvage schema
-- Write one `conv_<id>.analysis.json` per conversation
+- Write one `conv_<safe_id>.analysis.json` per conversation
 - Maintain `index.csv`
 - Supports retries + resume/force
 
@@ -110,6 +110,14 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 - `conv_<safe_id>.analysis.json` (when analysis is enabled)
 - `index.csv`
   - includes `route_recommendation`, `verdict`, `valuable_residual_count`, `next_steps_count` for easier distribution review
+
+Filename details:
+
+- Output filenames are explicitly `conv_<safe_id>.md` and `conv_<safe_id>.analysis.json`.
+- `safe_id` follows `safe_id()` in `convert_and_analyze.py`:
+  - Replace every non `[a-zA-Z0-9_.-]` character with `_`.
+  - Truncate to a maximum length of 80 characters.
+- Because IDs are normalized this way, collisions are theoretically possible; do not assume strict one-to-one raw-id filename identity.
 
 ## Notes
 - Current implementation supports `provider=openai`.
