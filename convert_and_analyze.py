@@ -279,6 +279,77 @@ def has_actionable_next_steps(next_steps: List[str]) -> bool:
     return any(not is_no_action_step(step) for step in next_steps)
 
 
+def residual_asset_strength(residual: str) -> int:
+    text = residual.strip().lower()
+    if not text:
+        return 0
+    strong_markers = [
+        "框架",
+        "流程",
+        "映射",
+        "門檻",
+        "判準",
+        "條件",
+        "原則",
+        "規則",
+        "檢核",
+        "指標",
+        "kpi",
+        "決策",
+        "清單",
+        "模型",
+        "framework",
+        "mapping",
+        "threshold",
+        "criteria",
+        "principle",
+        "checklist",
+        "metric",
+        "rule",
+    ]
+    score = sum(1 for marker in strong_markers if marker in text)
+    if re.search(r"(?:ltv|cac|arr|pmf|\d)", text):
+        score += 1
+    if "：" in residual or ":" in residual:
+        score += 1
+    return score
+
+
+def residual_is_work_system_worthy(residual: str) -> bool:
+    return residual_asset_strength(residual) >= 2
+
+
+def build_work_system_signals(residuals: List[str]) -> Dict[str, Any]:
+    strengths = [residual_asset_strength(item) for item in residuals]
+    work_system_count = sum(1 for score in strengths if score >= 2)
+    strong_asset_count = sum(1 for score in strengths if score >= 3)
+    return {
+        "work_system_count": work_system_count,
+        "has_work_system_residual": work_system_count > 0,
+        "strong_asset_count": strong_asset_count,
+        "has_strong_residual_asset": strong_asset_count > 0,
+    }
+
+
+def can_promote_to_b(signals: Dict[str, Any]) -> bool:
+    if not signals["has_actionable_steps"]:
+        return False
+    if signals["residual_count"] >= 2 and signals["has_work_system_residual"]:
+        return True
+    if signals["residual_count"] == 1 and signals["has_work_system_residual"]:
+        return True
+    return False
+
+
+def can_keep_a(signals: Dict[str, Any]) -> bool:
+    return (
+        signals["residual_count"] >= 2
+        and signals["has_actionable_steps"]
+        and signals["has_work_system_residual"]
+        and not signals["partial_salvage"]
+    )
+
+
 def detect_verdict_semantics(verdict: str) -> Dict[str, bool]:
     text = verdict.strip().lower()
     not_worth_markers = [
@@ -320,6 +391,7 @@ def build_salvage_signals(obj: Dict[str, Any]) -> Dict[str, Any]:
     residual_count = len(residuals)
     actionable = has_actionable_next_steps(next_steps)
     thin_residual = residual_count <= 1
+    work_system_signals = build_work_system_signals(residuals)
     return {
         "residuals": residuals,
         "next_steps": next_steps,
@@ -327,6 +399,7 @@ def build_salvage_signals(obj: Dict[str, Any]) -> Dict[str, Any]:
         "residual_count": residual_count,
         "has_actionable_steps": actionable,
         "thin_residual": thin_residual,
+        **work_system_signals,
         **semantics,
     }
 
@@ -348,16 +421,16 @@ def normalize_salvage_analysis(obj: Dict[str, Any]) -> Dict[str, Any]:
         signals["residual_count"] == 0 and not signals["has_actionable_steps"]
     ):
         route = "D"
+    elif route == "A":
+        route = "A" if can_keep_a(signals) else ("B" if can_promote_to_b(signals) else "C")
+    elif route == "B":
+        route = "B" if can_promote_to_b(signals) else ("D" if signals["residual_count"] == 0 else "C")
+    elif route == "C" and can_promote_to_b(signals):
+        route = "B"
     elif signals["thin_residual"] and not signals["has_actionable_steps"]:
         route = "C"
-    elif signals["partial_salvage"] and route in {"A", "B"}:
+    elif route not in {"C", "D"}:
         route = "C"
-    elif route == "A" and (
-        signals["thin_residual"] or not signals["has_actionable_steps"]
-    ):
-        route = "C"
-    elif route == "B" and signals["residual_count"] == 0:
-        route = "C" if signals["has_actionable_steps"] else "D"
 
     normalized["route_recommendation"] = route
     return normalized
@@ -419,12 +492,19 @@ def validate_analysis(obj: Dict[str, Any], analysis_schema: str) -> Tuple[bool, 
             return False, "semantic_empty_must_be_d"
 
         if route == "A":
-            if signals["residual_count"] < 2:
+            if not can_keep_a(signals):
                 return False, "semantic_a_requires_strong_residuals"
-            if signals["thin_residual"] or signals["partial_salvage"]:
+            if signals["partial_salvage"]:
                 return False, "semantic_a_reject_partial_salvage"
 
-        if signals["thin_residual"] and not signals["has_actionable_steps"] and route in {"A", "B"}:
+        if route == "B" and not can_promote_to_b(signals):
+            return False, "semantic_b_requires_actionable_work_system_value"
+
+        if (
+            signals["thin_residual"]
+            and not signals["has_actionable_steps"]
+            and route in {"A", "B"}
+        ):
             return False, "semantic_thin_residual_c_or_d_only"
 
         if signals["explicit_not_worth"] and route != "D":
@@ -455,7 +535,9 @@ def build_analysis_prompts(
             "若不確定，往低評，不往高評。不要因為回覆完整、漂亮、有條理而高估價值。\n"
             "請嚴格、克制、少廢話，只輸出真正值得留下的內容。不要討好，不要美化普通內容，不要重述整段聊天。\n"
             "普通問答、一般翻譯、課後對答案、資訊整理、客套鼓勵、模糊靈感、無後續影響討論，通常直接判 D。\n"
-            "如果只有局部可回收殘留（例如只剩 1 個命名/框架/判斷/好句），不足支撐整段保存，優先判 C。\n"
+            "partial salvage 代表不是 A，但不等於一定是 C：若殘留部分已足以進入工作系統，仍可判 B。\n"
+            "B 的關鍵不是完整度，而是是否可直接進入專案筆記、規格、任務、方法清單、決策紀錄。\n"
+            "不要把「單一高價值可執行框架/門檻/原則 + 明確下一步」過度壓成 C。\n"
             "valuable_residuals 寧缺勿濫；next_steps 只保留有壓力且可執行的下一步。\n"
             "盡量將整體結果控制在 250 個中文字以內。\n"
             "只輸出 JSON 物件，且 key 必須且只能是："
@@ -467,8 +549,9 @@ def build_analysis_prompts(
             "- next_steps：0-2 條最值得做的具體下一步；若不值得行動就 [\"暫不行動\"]；避免空泛建議。\n"
             "- route_recommendation：只能是 A/B/C/D 其中一個。\n"
             "  A=高價值且可直接保存為長期知識、原則、模型、框架；"
-            "  B=有明確可執行價值，可進入專案、規格、任務、決策紀錄；"
-            "  C=只有局部殘留可救，不足以支撐整段高評；"
+            "  B=未必完整或原創，但已具明確執行價值，可直接進入專案、規格、任務、方法清單、決策紀錄；"
+            "    常見是可重複流程/框架/映射、可執行門檻或量化條件、可直接採用的操作/談判原則或風險檢核；"
+            "  C=只有局部殘留可救，通常只值得摘一句，尚不足以進入工作系統；"
             "  D=整體不值得保存，或資訊密度太低，或只是普通內容。\n"
             "- verdict：一句更銳利但準確的判決，必須直接說清楚是否值得保存。"
         )

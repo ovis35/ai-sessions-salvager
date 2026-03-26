@@ -98,6 +98,7 @@ Route semantics in salvage mode:
 
 - `A`: high-value reusable knowledge/frameworks that are worth preserving as durable principles or models
 - `B`: clear execution value that should enter project/spec/task/decision records
+  - B does **not** require high completeness; if the salvageable residual is already work-system-worthy, it can be B.
 - `C`: only partial residual value (e.g., one salvageable naming/judgment/sentence), not enough for high-grade preservation
 - `D`: overall not worth saving (low information density, routine Q&A/translation/sorting/log-like content)
 
