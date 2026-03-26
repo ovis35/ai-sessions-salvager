@@ -63,11 +63,21 @@ python convert_and_analyze.py \
 - `verdict`
 
 ## Salvage mode behavior
-Salvage mode is intentionally strict residue salvage, not generic summarization:
+Salvage mode is intentionally strict residue salvage, not generic summarization (and stricter than before):
 
 - prefer omission over over-inclusion
 - avoid flattery or beautification
 - keep only genuinely valuable residuals
+- default to lower ratings when uncertain (`C/D` over `A/B`)
+
+Route semantics in salvage mode:
+
+- `A`: high-value reusable knowledge/frameworks that are worth preserving as durable principles or models
+- `B`: clear execution value that should enter project/spec/task/decision records
+- `C`: only partial residual value (e.g., one salvageable naming/judgment/sentence), not enough for high-grade preservation
+- `D`: overall not worth saving (low information density, routine Q&A/translation/sorting/log-like content)
+
+Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 
 ## Output files
 (Generated in `--output-root`, default `.`)
@@ -75,6 +85,7 @@ Salvage mode is intentionally strict residue salvage, not generic summarization:
 - `conv_<safe_id>.md`
 - `conv_<safe_id>.analysis.json` (when analysis is enabled)
 - `index.csv`
+  - includes `route_recommendation`, `verdict`, `valuable_residual_count`, `next_steps_count` for easier distribution review
 
 ## Notes
 - Current implementation supports `provider=openai`.
