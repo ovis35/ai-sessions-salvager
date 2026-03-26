@@ -565,10 +565,14 @@ def normalize_salvage_analysis(obj: Dict[str, Any]) -> Dict[str, Any]:
 def build_calibration_prompt(
     conv: NormalizedConversation, first_pass: Dict[str, Any]
 ) -> Tuple[str, str]:
+    initial_route = str(first_pass.get("route_recommendation", "")).strip().upper()
     system_prompt = (
-        "你是 second-pass route calibrator。\n"
-        "你不是重做摘要，不是重做 extraction；你只負責校正 final route。\n"
-        "請優先依據 first-pass salvage JSON 判斷，conversation excerpt 只作必要補充。\n"
+        "你是 second-pass overrating adjudicator。\n"
+        "你的任務不是背書 first-pass，而是檢查此案例是否被高估。\n"
+        "first-pass JSON 只是待審主張，不是可信答案；conversation excerpt 才是反證來源。\n"
+        "若 verdict 出現『僅局部可摘錄/僅少量可留/保存價值有限/尚不足直接進入工作系統』等語義，預設降為 C。\n"
+        "只有在殘留內容足以直接寫入方法筆記、規格、決策紀錄時，才可保留 B。\n"
+        "若不確定，降級，不升級。\n"
         "判準：A=高價值且較完整，可直接保存為長期知識；"
         "B=雖不完整但殘留已足以進入工作系統；"
         "C=只有局部可摘錄，尚不足進入工作系統；"
@@ -577,6 +581,7 @@ def build_calibration_prompt(
         "final_route 只能是 A/B/C/D。confidence 只能是 low/medium/high。"
     )
     compact_first_pass = {
+        "initial_route_recommendation": initial_route,
         "topic": first_pass.get("topic", ""),
         "valuable_residuals": first_pass.get("valuable_residuals", []),
         "drift_point": first_pass.get("drift_point", ""),
@@ -585,7 +590,8 @@ def build_calibration_prompt(
         "verdict": first_pass.get("verdict", ""),
     }
     user_prompt = (
-        "請只校正 final route，不要重做分析。\n\n"
+        "請只做 overrating 仲裁，不要重做摘要或 extraction。\n"
+        "initial_route_recommendation 是待審對象，不是既定答案。\n\n"
         f"Title: {conv.title}\n"
         f"First-pass salvage JSON:\n{json.dumps(compact_first_pass, ensure_ascii=False)}\n\n"
         f"Conversation excerpt:\n{truncate_messages(conv.messages, max_chars=3500)}"
@@ -618,6 +624,32 @@ def second_pass_judge(
     reason = str(calibration.get("reason", "")).strip()
     if not reason:
         raise ValueError("invalid_second_pass_reason")
+    signals = build_salvage_signals(first_pass)
+    initial_route = str(first_pass.get("route_recommendation", "")).strip().upper()
+
+    can_strongly_upgrade_c_to_b = (
+        can_stay_b(signals)
+        and signals["residual_count"] >= 2
+        and signals["has_strong_residual_asset"]
+    )
+    if initial_route == "B":
+        allowed_routes = {"B", "C", "D"}
+    elif initial_route == "C":
+        allowed_routes = {"C", "D"}
+        if can_strongly_upgrade_c_to_b:
+            allowed_routes.add("B")
+    else:
+        allowed_routes = {"A", "B", "C", "D"}
+
+    if final_route not in allowed_routes:
+        final_route = "C" if initial_route in {"B", "C"} else initial_route
+        reason = f"{reason}；direction_guard_fallback"
+        confidence = "high"
+
+    if final_route == "B" and signals["has_b_blocker_semantics"]:
+        final_route = "C"
+        reason = f"{reason}；hard_rule_b_blocker"
+        confidence = "high"
     return {
         "final_route": final_route,
         "confidence": confidence,

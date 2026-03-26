@@ -310,6 +310,68 @@ class SalvageLogicTests(unittest.TestCase):
         self.assertFalse(result["calibration_applied"])
         self.assertEqual(result["calibration_reason"], "second_pass_failed")
 
+    def test_second_pass_direction_guard_blocks_c_to_b_without_strong_evidence(self):
+        conv = ca.NormalizedConversation(
+            id="c4",
+            source="chatgpt",
+            title="direction guard",
+            created_at=None,
+            updated_at=None,
+            messages=[ca.NormalizedMessage(role="user", content="test")],
+        )
+        first_pass = {
+            "topic": "一般整理",
+            "valuable_residuals": ["一條泛用提醒"],
+            "drift_point": "後段發散",
+            "next_steps": ["先摘錄，暫不落地"],
+            "route_recommendation": "C",
+            "verdict": "僅局部可摘錄，尚不足進入工作系統",
+        }
+        with patch.object(
+            ca, "call_openai_chat", return_value={"final_route": "B", "reason": "可留", "confidence": "high"}
+        ):
+            result = ca.second_pass_judge(
+                conv=conv,
+                first_pass=first_pass,
+                model="gpt-test",
+                provider="openai",
+                api_key="k",
+            )
+        self.assertEqual(result["final_route"], "C")
+        self.assertIn("direction_guard_fallback", result["reason"])
+        self.assertEqual(result["confidence"], "high")
+
+    def test_second_pass_hard_rule_blocker_downgrades_b_to_c(self):
+        conv = ca.NormalizedConversation(
+            id="c5",
+            source="chatgpt",
+            title="hard rule blocker",
+            created_at=None,
+            updated_at=None,
+            messages=[ca.NormalizedMessage(role="user", content="test")],
+        )
+        first_pass = {
+            "topic": "流程整理",
+            "valuable_residuals": ["上線檢核規則：核心路徑需通過"],
+            "drift_point": "中段偏發散",
+            "next_steps": ["先做摘錄，暫不納入規格"],
+            "route_recommendation": "B",
+            "verdict": "僅局部可摘用，尚不足直接進入工作系統",
+        }
+        with patch.object(
+            ca, "call_openai_chat", return_value={"final_route": "B", "reason": "可直接採用", "confidence": "high"}
+        ):
+            result = ca.second_pass_judge(
+                conv=conv,
+                first_pass=first_pass,
+                model="gpt-test",
+                provider="openai",
+                api_key="k",
+            )
+        self.assertEqual(result["final_route"], "C")
+        self.assertIn("hard_rule_b_blocker", result["reason"])
+        self.assertEqual(result["confidence"], "high")
+
     def test_infer_format_dict_chatgpt(self):
         data = {
             "conversations": [
