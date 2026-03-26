@@ -6,7 +6,7 @@ Batch-convert official ChatGPT/Claude export JSON into one markdown file per con
 - Parse `chatgpt` / `claude` export JSON (`--format auto` supported)
 - Write one `conv_<id>.md` per conversation
 - Convert-only mode (`--skip-analysis`) with no API calls required
-- Batch call LLM API for either default summary schema or salvage schema
+- Batch call LLM API for either default summary schema or strict residue-salvage schema
 - Write one `conv_<id>.analysis.json` per conversation
 - Maintain `index.csv`
 - Supports retries + resume/force
@@ -25,11 +25,7 @@ python convert_and_analyze.py \
   --format auto \
   --output-root . \
   --skip-analysis
-```
-
-### Default analysis schema (`summary/tags/language/quality_score`)
-
-```bash
+Default analysis schema (summary/tags/language/quality_score)
 python convert_and_analyze.py \
   --input export.json \
   --format auto \
@@ -39,11 +35,7 @@ python convert_and_analyze.py \
   --max-concurrency 5 \
   --retry 3 \
   --resume
-```
-
-### Salvage analysis schema
-
-```bash
+Salvage analysis schema
 python convert_and_analyze.py \
   --input export.json \
   --format auto \
@@ -52,15 +44,27 @@ python convert_and_analyze.py \
   --analysis-schema salvage \
   --output-root . \
   --resume
-```
 
-## Output files (in `--output-root`, default `.`)
-- `conv_<safe_id>.md`
-- `conv_<safe_id>.analysis.json` (when analysis is enabled)
-- `index.csv`
+Salvage mode outputs JSON fields:
 
-## Notes
-- Current implementation supports `provider=openai`.
-- `--model` is required unless `--skip-analysis` is used.
-- `--analysis-schema` supports `default|salvage` (default: `default`).
-- If `--resume` is enabled and analysis file exists, that conversation is skipped unless `--force` is provided.
+topic
+valuable_residuals
+drift_point
+next_steps
+route_recommendation (A|B|C|D)
+verdict
+
+Salvage mode is intentionally strict residue salvage, not generic summarization:
+
+prefer omission over over-inclusion
+avoid flattery or beautification
+keep only genuinely valuable residuals
+Output files (in --output-root, default .)
+conv_<safe_id>.md
+conv_<safe_id>.analysis.json (when analysis is enabled)
+index.csv
+Notes
+Current implementation supports provider=openai.
+--model is required unless --skip-analysis is used.
+--analysis-schema supports default|salvage (default: default).
+If --resume is enabled and analysis file exists, that conversation is skipped unless --force is provided.
