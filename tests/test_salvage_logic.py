@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import convert_and_analyze as ca
 
@@ -170,6 +171,144 @@ class SalvageLogicTests(unittest.TestCase):
         }
         ok, reason = ca.validate_analysis(obj, "default")
         self.assertTrue(ok, reason)
+
+    def test_needs_second_pass_explicit_d_is_false(self):
+        obj = {
+            "topic": "一般問答",
+            "valuable_residuals": [],
+            "drift_point": "無明顯帶偏",
+            "next_steps": ["暫不行動"],
+            "route_recommendation": "D",
+            "verdict": "整體不值得保存，資訊密度太低",
+        }
+        normalized = ca.normalize_salvage_analysis(obj)
+        self.assertEqual(normalized["route_recommendation"], "D")
+        self.assertFalse(ca.needs_second_pass(normalized))
+        final_obj = ca.finalize_salvage_result(normalized)
+        self.assertFalse(final_obj["calibration_applied"])
+
+    def test_needs_second_pass_explicit_a_is_false(self):
+        obj = {
+            "topic": "建立完整評估框架",
+            "valuable_residuals": ["三層評估框架", "量化門檻", "風險檢核清單"],
+            "drift_point": "無明顯帶偏",
+            "next_steps": ["寫入團隊 SOP 並指定 owner"],
+            "route_recommendation": "A",
+            "verdict": "可直接保存為長期知識框架",
+        }
+        normalized = ca.normalize_salvage_analysis(obj)
+        self.assertEqual(normalized["route_recommendation"], "A")
+        self.assertFalse(ca.needs_second_pass(normalized))
+
+    def test_analyze_salvage_second_pass_can_downgrade_b_to_c(self):
+        conv = ca.NormalizedConversation(
+            id="c1",
+            source="chatgpt",
+            title="混合案例",
+            created_at=None,
+            updated_at=None,
+            messages=[ca.NormalizedMessage(role="user", content="test")],
+        )
+        first_pass = {
+            "topic": "流程整理",
+            "valuable_residuals": ["一條可留原則：先定義輸入再定義輸出"],
+            "drift_point": "中段偏發散",
+            "next_steps": ["整理可留句，尚不進入規格"],
+            "route_recommendation": "B",
+            "verdict": "有局部可留且可用，但整體仍有限",
+        }
+        second_pass = {
+            "final_route": "C",
+            "reason": "僅局部可摘錄，尚不足進入工作系統",
+            "confidence": "medium",
+        }
+        with patch.object(ca, "call_openai_chat", side_effect=[first_pass]), patch.object(
+            ca, "second_pass_judge", return_value=second_pass
+        ):
+            result = ca.analyze_conversation(
+                conv=conv,
+                model="gpt-test",
+                provider="openai",
+                api_key="k",
+                retries=0,
+                analysis_schema="salvage",
+            )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["initial_route_recommendation"], "B")
+        self.assertEqual(result["final_route_recommendation"], "C")
+        self.assertEqual(result["route_recommendation"], "C")
+        self.assertTrue(result["calibration_applied"])
+
+    def test_analyze_salvage_second_pass_keeps_true_b(self):
+        conv = ca.NormalizedConversation(
+            id="c2",
+            source="chatgpt",
+            title="true b",
+            created_at=None,
+            updated_at=None,
+            messages=[ca.NormalizedMessage(role="user", content="test")],
+        )
+        first_pass = {
+            "topic": "決策紀錄整理",
+            "valuable_residuals": ["門檻：LTV/CAC>=3 且 90 天回本"],
+            "drift_point": "後段有雜訊",
+            "next_steps": ["寫入方法筆記並附測量口徑"],
+            "route_recommendation": "B",
+            "verdict": "雖然整段不值得完整保存，但殘留已足以進入方法筆記",
+        }
+        second_pass = {
+            "final_route": "B",
+            "reason": "殘留可直接進入決策紀錄",
+            "confidence": "high",
+        }
+        with patch.object(ca, "call_openai_chat", side_effect=[first_pass]), patch.object(
+            ca, "second_pass_judge", return_value=second_pass
+        ):
+            result = ca.analyze_conversation(
+                conv=conv,
+                model="gpt-test",
+                provider="openai",
+                api_key="k",
+                retries=0,
+                analysis_schema="salvage",
+            )
+        self.assertEqual(result["initial_route_recommendation"], "B")
+        self.assertEqual(result["route_recommendation"], "B")
+        self.assertTrue(result["calibration_applied"])
+
+    def test_analyze_salvage_second_pass_failure_fallback(self):
+        conv = ca.NormalizedConversation(
+            id="c3",
+            source="chatgpt",
+            title="failure fallback",
+            created_at=None,
+            updated_at=None,
+            messages=[ca.NormalizedMessage(role="user", content="test")],
+        )
+        first_pass = {
+            "topic": "流程整理",
+            "valuable_residuals": ["一條可留原則：先定義輸入再定義輸出"],
+            "drift_point": "中段偏發散",
+            "next_steps": ["整理可留句，尚不進入規格"],
+            "route_recommendation": "B",
+            "verdict": "有局部可留且可用，但整體仍有限",
+        }
+        with patch.object(ca, "call_openai_chat", side_effect=[first_pass]), patch.object(
+            ca, "second_pass_judge", side_effect=RuntimeError("boom")
+        ):
+            result = ca.analyze_conversation(
+                conv=conv,
+                model="gpt-test",
+                provider="openai",
+                api_key="k",
+                retries=0,
+                analysis_schema="salvage",
+            )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["route_recommendation"], "B")
+        self.assertEqual(result["initial_route_recommendation"], "B")
+        self.assertFalse(result["calibration_applied"])
+        self.assertEqual(result["calibration_reason"], "second_pass_failed")
 
     def test_infer_format_dict_chatgpt(self):
         data = {

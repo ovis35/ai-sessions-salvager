@@ -442,6 +442,44 @@ def detect_verdict_semantics(verdict: str) -> Dict[str, bool]:
     }
 
 
+def _has_any_marker(text: str, markers: List[str]) -> bool:
+    return any(marker in text for marker in markers)
+
+
+def verdict_has_mixed_signals(verdict: str) -> bool:
+    text = verdict.strip().lower()
+    if not text:
+        return False
+    positive_markers = [
+        "可留",
+        "可用",
+        "可直接",
+        "可落地",
+        "可採用",
+        "值得保留",
+        "可進入",
+        "足以進入",
+        "usable",
+        "ready",
+        "actionable",
+    ]
+    negative_markers = [
+        "不足",
+        "不宜",
+        "有限",
+        "不值得整段保存",
+        "尚不足",
+        "難直接",
+        "僅局部",
+        "only partial",
+        "not ready",
+        "not enough",
+    ]
+    return _has_any_marker(text, positive_markers) and _has_any_marker(
+        text, negative_markers
+    )
+
+
 def build_salvage_signals(obj: Dict[str, Any]) -> Dict[str, Any]:
     residuals = normalize_text_list(obj.get("valuable_residuals"), max_items=3)
     next_steps = normalize_text_list(obj.get("next_steps"), max_items=2)
@@ -461,6 +499,33 @@ def build_salvage_signals(obj: Dict[str, Any]) -> Dict[str, Any]:
         **work_system_signals,
         **semantics,
     }
+
+
+def needs_second_pass(result: Dict[str, Any]) -> bool:
+    route = str(result.get("route_recommendation", "")).strip().upper()
+    if route not in {"B", "C"}:
+        return False
+    signals = build_salvage_signals(result)
+    mixed_verdict = verdict_has_mixed_signals(signals["verdict"])
+    low_residual_but_actionable = (
+        signals["residual_count"] <= 1 and signals["has_actionable_steps"]
+    )
+    richer_residual_with_blocker = (
+        signals["residual_count"] >= 2 and signals["has_b_blocker_semantics"]
+    )
+    uncertain_boundary = (
+        signals["partial_salvage"]
+        and signals["has_actionable_steps"]
+        and signals["residual_count"] > 0
+    )
+    return any(
+        [
+            mixed_verdict,
+            low_residual_but_actionable,
+            richer_residual_with_blocker,
+            uncertain_boundary,
+        ]
+    )
 
 
 def normalize_salvage_analysis(obj: Dict[str, Any]) -> Dict[str, Any]:
@@ -495,6 +560,93 @@ def normalize_salvage_analysis(obj: Dict[str, Any]) -> Dict[str, Any]:
 
     normalized["route_recommendation"] = route
     return normalized
+
+
+def build_calibration_prompt(
+    conv: NormalizedConversation, first_pass: Dict[str, Any]
+) -> Tuple[str, str]:
+    system_prompt = (
+        "你是 second-pass route calibrator。\n"
+        "你不是重做摘要，不是重做 extraction；你只負責校正 final route。\n"
+        "請優先依據 first-pass salvage JSON 判斷，conversation excerpt 只作必要補充。\n"
+        "判準：A=高價值且較完整，可直接保存為長期知識；"
+        "B=雖不完整但殘留已足以進入工作系統；"
+        "C=只有局部可摘錄，尚不足進入工作系統；"
+        "D=整體不值得保存。\n"
+        "只輸出 JSON，且 key 必須且只能是：final_route, reason, confidence。\n"
+        "final_route 只能是 A/B/C/D。confidence 只能是 low/medium/high。"
+    )
+    compact_first_pass = {
+        "topic": first_pass.get("topic", ""),
+        "valuable_residuals": first_pass.get("valuable_residuals", []),
+        "drift_point": first_pass.get("drift_point", ""),
+        "next_steps": first_pass.get("next_steps", []),
+        "route_recommendation": first_pass.get("route_recommendation", ""),
+        "verdict": first_pass.get("verdict", ""),
+    }
+    user_prompt = (
+        "請只校正 final route，不要重做分析。\n\n"
+        f"Title: {conv.title}\n"
+        f"First-pass salvage JSON:\n{json.dumps(compact_first_pass, ensure_ascii=False)}\n\n"
+        f"Conversation excerpt:\n{truncate_messages(conv.messages, max_chars=3500)}"
+    )
+    return system_prompt, user_prompt
+
+
+def second_pass_judge(
+    conv: NormalizedConversation,
+    first_pass: Dict[str, Any],
+    model: str,
+    provider: str,
+    api_key: str,
+) -> Dict[str, str]:
+    if provider != "openai":
+        raise ValueError("Only provider=openai is implemented in this version")
+    system_prompt, user_prompt = build_calibration_prompt(conv, first_pass)
+    calibration = call_openai_chat(
+        model=model,
+        api_key=api_key,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
+    final_route = str(calibration.get("final_route", "")).strip().upper()
+    if final_route not in {"A", "B", "C", "D"}:
+        raise ValueError("invalid_second_pass_final_route")
+    confidence = str(calibration.get("confidence", "")).strip().lower()
+    if confidence not in {"low", "medium", "high"}:
+        raise ValueError("invalid_second_pass_confidence")
+    reason = str(calibration.get("reason", "")).strip()
+    if not reason:
+        raise ValueError("invalid_second_pass_reason")
+    return {
+        "final_route": final_route,
+        "confidence": confidence,
+        "reason": reason,
+    }
+
+
+def finalize_salvage_result(
+    first_pass: Dict[str, Any],
+    calibration: Optional[Dict[str, str]] = None,
+    calibration_error: Optional[str] = None,
+) -> Dict[str, Any]:
+    finalized = dict(first_pass)
+    initial_route = str(first_pass.get("route_recommendation", "")).strip().upper()
+    finalized["initial_route_recommendation"] = initial_route
+    finalized["calibration_applied"] = False
+    finalized["calibration_confidence"] = ""
+    finalized["calibration_reason"] = ""
+    finalized["final_route_recommendation"] = initial_route
+    if calibration:
+        final_route = calibration["final_route"]
+        finalized["route_recommendation"] = final_route
+        finalized["final_route_recommendation"] = final_route
+        finalized["calibration_reason"] = calibration["reason"]
+        finalized["calibration_confidence"] = calibration["confidence"]
+        finalized["calibration_applied"] = True
+    elif calibration_error:
+        finalized["calibration_reason"] = calibration_error
+    return finalized
 
 
 def validate_analysis(obj: Dict[str, Any], analysis_schema: str) -> Tuple[bool, str]:
@@ -651,6 +803,11 @@ def failed_analysis_result(analysis_schema: str, error: str) -> Dict[str, Any]:
             "drift_point": "",
             "next_steps": [],
             "route_recommendation": "",
+            "initial_route_recommendation": "",
+            "final_route_recommendation": "",
+            "calibration_reason": "",
+            "calibration_confidence": "",
+            "calibration_applied": False,
             "verdict": "",
             "error": error,
         }
@@ -679,17 +836,43 @@ def analyze_conversation(
         try:
             if provider != "openai":
                 raise ValueError("Only provider=openai is implemented in this version")
-            result = call_openai_chat(
+            first_pass = call_openai_chat(
                 model=model,
                 api_key=api_key,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
             )
             if analysis_schema == "salvage":
-                result = normalize_salvage_analysis(result)
-            ok, reason = validate_analysis(result, analysis_schema=analysis_schema)
+                first_pass = normalize_salvage_analysis(first_pass)
+            ok, reason = validate_analysis(first_pass, analysis_schema=analysis_schema)
             if ok:
-                return {"schema": analysis_schema, "status": "ok", **result}
+                if analysis_schema != "salvage":
+                    return {"schema": analysis_schema, "status": "ok", **first_pass}
+
+                finalized = finalize_salvage_result(first_pass)
+                if needs_second_pass(first_pass):
+                    try:
+                        calibration = second_pass_judge(
+                            conv=conv,
+                            first_pass=first_pass,
+                            model=model,
+                            provider=provider,
+                            api_key=api_key,
+                        )
+                        finalized = finalize_salvage_result(
+                            first_pass, calibration=calibration
+                        )
+                    except Exception:
+                        finalized = finalize_salvage_result(
+                            first_pass, calibration_error="second_pass_failed"
+                        )
+
+                final_route = finalized.get("route_recommendation", "")
+                if final_route not in {"A", "B", "C", "D"}:
+                    finalized = finalize_salvage_result(
+                        first_pass, calibration_error="invalid_final_route_fallback"
+                    )
+                return {"schema": analysis_schema, "status": "ok", **finalized}
             last_error = reason
         except Exception as e:
             last_error = str(e)
@@ -707,6 +890,10 @@ def write_index_row(index_path: Path, row: Dict[str, Any]) -> None:
         "md_file",
         "analysis_file",
         "route_recommendation",
+        "initial_route_recommendation",
+        "final_route_recommendation",
+        "calibration_applied",
+        "calibration_confidence",
         "verdict",
         "valuable_residual_count",
         "next_steps_count",
@@ -797,6 +984,10 @@ def main() -> int:
                     "md_file": md_name,
                     "analysis_file": "",
                     "route_recommendation": "",
+                    "initial_route_recommendation": "",
+                    "final_route_recommendation": "",
+                    "calibration_applied": "",
+                    "calibration_confidence": "",
                     "verdict": "",
                     "valuable_residual_count": "",
                     "next_steps_count": "",
@@ -819,6 +1010,10 @@ def main() -> int:
                     "md_file": md_name,
                     "analysis_file": an_name,
                     "route_recommendation": "",
+                    "initial_route_recommendation": "",
+                    "final_route_recommendation": "",
+                    "calibration_applied": "",
+                    "calibration_confidence": "",
                     "verdict": "",
                     "valuable_residual_count": "",
                     "next_steps_count": "",
@@ -864,6 +1059,14 @@ def main() -> int:
                     index_path,
                     {
                         "route_recommendation": result.get("route_recommendation", ""),
+                        "initial_route_recommendation": result.get(
+                            "initial_route_recommendation", ""
+                        ),
+                        "final_route_recommendation": result.get(
+                            "final_route_recommendation", ""
+                        ),
+                        "calibration_applied": result.get("calibration_applied", ""),
+                        "calibration_confidence": result.get("calibration_confidence", ""),
                         "verdict": result.get("verdict", ""),
                         "valuable_residual_count": len(result.get("valuable_residuals", []))
                         if isinstance(result.get("valuable_residuals"), list)
