@@ -2,3 +2,5 @@ conv_*.md
 conv_*.analysis.json
 index.csv
 output/
+__pycache__/
+*.pyc
