@@ -332,6 +332,8 @@ def build_work_system_signals(residuals: List[str]) -> Dict[str, Any]:
 
 
 def can_promote_to_b(signals: Dict[str, Any]) -> bool:
+    if signals.get("has_b_blocker_semantics"):
+        return False
     if not signals["has_actionable_steps"]:
         return False
     if signals["residual_count"] >= 2 and signals["has_work_system_residual"]:
@@ -339,6 +341,10 @@ def can_promote_to_b(signals: Dict[str, Any]) -> bool:
     if signals["residual_count"] == 1 and signals["has_work_system_residual"]:
         return True
     return False
+
+
+def can_stay_b(signals: Dict[str, Any]) -> bool:
+    return can_promote_to_b(signals) and not signals.get("has_b_blocker_semantics", False)
 
 
 def can_keep_a(signals: Dict[str, Any]) -> bool:
@@ -377,9 +383,62 @@ def detect_verdict_semantics(verdict: str) -> Dict[str, bool]:
     ]
     explicit_not_worth = any(marker in text for marker in not_worth_markers)
     partial_salvage = any(marker in text for marker in partial_markers)
+    insufficient_readiness_markers = [
+        "尚不足直接進入工作系統",
+        "未達可直接進入工作系統",
+        "難直接進入工作系統",
+        "尚不足直接採用",
+        "未達可直接採用",
+        "未達可直接落地",
+        "not yet ready for direct use",
+        "not ready for work system",
+        "not ready for direct adoption",
+    ]
+    partial_only_markers = [
+        "僅局部可摘用",
+        "僅部分可留",
+        "勉強可留",
+        "勉強可摘錄",
+        "只適合摘錄",
+        "只能局部保留",
+        "only partially salvageable",
+        "only suitable for excerpting",
+    ]
+    concept_or_draft_markers = [
+        "仍停在概念層",
+        "只是草案",
+        "只是一般整理",
+        "只是初步整理",
+        "still too conceptual",
+        "draft only",
+    ]
+    has_insufficient_readiness = any(marker in text for marker in insufficient_readiness_markers)
+    has_partial_only = any(marker in text for marker in partial_only_markers)
+    has_concept_or_draft = any(marker in text for marker in concept_or_draft_markers)
+    indicates_partial = (
+        "局部" in text
+        or "部分" in text
+        or "partial" in text
+        or "摘錄" in text
+        or "excerpt" in text
+    )
+    mentions_work_system_gate = (
+        "工作系統" in text
+        or "直接採用" in text
+        or "直接落地" in text
+        or "direct use" in text
+        or "work system" in text
+        or "direct adoption" in text
+    )
+    has_b_blocker_semantics = (
+        has_insufficient_readiness
+        or has_partial_only
+        or (has_concept_or_draft and (indicates_partial or mentions_work_system_gate))
+    )
     return {
         "explicit_not_worth": explicit_not_worth,
         "partial_salvage": partial_salvage,
+        "has_b_blocker_semantics": has_b_blocker_semantics,
     }
 
 
@@ -422,11 +481,13 @@ def normalize_salvage_analysis(obj: Dict[str, Any]) -> Dict[str, Any]:
     ):
         route = "D"
     elif route == "A":
-        route = "A" if can_keep_a(signals) else ("B" if can_promote_to_b(signals) else "C")
+        route = "A" if can_keep_a(signals) else ("B" if can_stay_b(signals) else "C")
     elif route == "B":
-        route = "B" if can_promote_to_b(signals) else ("D" if signals["residual_count"] == 0 else "C")
-    elif route == "C" and can_promote_to_b(signals):
+        route = "B" if can_stay_b(signals) else ("D" if signals["residual_count"] == 0 else "C")
+    elif route == "C" and can_stay_b(signals):
         route = "B"
+    elif route in {"A", "B", "C"} and signals["has_b_blocker_semantics"]:
+        route = "C"
     elif signals["thin_residual"] and not signals["has_actionable_steps"]:
         route = "C"
     elif route not in {"C", "D"}:
@@ -497,7 +558,9 @@ def validate_analysis(obj: Dict[str, Any], analysis_schema: str) -> Tuple[bool, 
             if signals["partial_salvage"]:
                 return False, "semantic_a_reject_partial_salvage"
 
-        if route == "B" and not can_promote_to_b(signals):
+        if route == "B" and not can_stay_b(signals):
+            if signals["has_b_blocker_semantics"]:
+                return False, "semantic_b_blocker_forces_c"
             return False, "semantic_b_requires_actionable_work_system_value"
 
         if (
@@ -512,6 +575,9 @@ def validate_analysis(obj: Dict[str, Any], analysis_schema: str) -> Tuple[bool, 
 
         if signals["partial_salvage"] and route == "A":
             return False, "semantic_partial_salvage_not_a"
+
+        if signals["has_b_blocker_semantics"] and route in {"A", "B"}:
+            return False, "semantic_blocker_not_a_or_b"
     else:
         if not isinstance(obj["summary"], str) or not obj["summary"].strip():
             return False, "invalid_summary"
