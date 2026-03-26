@@ -23,7 +23,7 @@ Batch-convert official ChatGPT/Claude export JSON into one markdown file per con
 python convert_and_analyze.py \
   --input export.json \
   --format auto \
-  --output-root . \
+  --output-root ./output \
   --skip-analysis
 ```
 
@@ -35,7 +35,7 @@ python convert_and_analyze.py \
   --format auto \
   --provider openai \
   --model gpt-4.1-mini \
-  --output-root . \
+  --output-root ./output \
   --max-concurrency 5 \
   --retry 3 \
   --resume
@@ -50,7 +50,7 @@ python convert_and_analyze.py \
   --provider openai \
   --model gpt-4.1-mini \
   --analysis-schema salvage \
-  --output-root . \
+  --output-root ./output \
   --resume
 ```
 
@@ -92,3 +92,8 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 - `--model` is required unless `--skip-analysis` is used.
 - `--analysis-schema` supports `default|salvage` (default: `default`).
 - If `--resume` is enabled and analysis file exists, that conversation is skipped unless `--force` is provided.
+
+## Privacy/Safety
+- 轉換出的 `conv_*.md`、`conv_*.analysis.json` 與 `index.csv` 可能包含敏感資訊（例如個資、內部討論、API 片段）。
+- 建議把輸出寫到獨立資料夾（例如 `--output-root ./output`），並確保該資料夾與輸出檔案不提交到版本控制。
+- 本 repo 已提供 `.gitignore` 預設忽略上述輸出與 `output/` 目錄，請在提交前再次確認。
