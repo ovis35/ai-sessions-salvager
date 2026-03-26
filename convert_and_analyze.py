@@ -254,7 +254,7 @@ def main() -> int:
     p.add_argument("--input", required=True)
     p.add_argument("--format", default="auto", choices=["auto", "chatgpt", "claude"])
     p.add_argument("--provider", default="openai")
-    p.add_argument("--model", required=True)
+    p.add_argument("--model")
     p.add_argument("--api-key-env", default="OPENAI_API_KEY")
     p.add_argument("--output-root", default=".")
     p.add_argument("--max-concurrency", type=int, default=5)
@@ -267,6 +267,9 @@ def main() -> int:
 
     api_key = ""
     if not args.skip_analysis:
+        if not args.model:
+            print("Missing required argument: --model (unless --skip-analysis is used)", file=sys.stderr)
+            return 2
         api_key = os.getenv(args.api_key_env, "")
         if not api_key:
             print(f"Missing API key env: {args.api_key_env}", file=sys.stderr)

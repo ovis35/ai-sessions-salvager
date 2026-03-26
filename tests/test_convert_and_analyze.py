@@ -78,3 +78,55 @@ def test_cli_skip_analysis(tmp_path: Path):
     assert index.exists()
     parsed = json.loads(analysis.read_text(encoding="utf-8"))
     assert parsed["status"] == "skipped_analysis"
+
+
+def test_cli_skip_analysis_without_model(tmp_path: Path):
+    export = tmp_path / "export.json"
+    payload = [{"uuid": "claude-2", "name": "No model required", "chat_messages": [{"sender": "human", "text": "hi"}]}]
+    export.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "convert_and_analyze.py",
+            "--input",
+            str(export),
+            "--format",
+            "auto",
+            "--provider",
+            "openai",
+            "--output-root",
+            str(tmp_path),
+            "--skip-analysis",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_cli_requires_model_when_analysis_enabled(tmp_path: Path):
+    export = tmp_path / "export.json"
+    payload = [{"uuid": "claude-3", "name": "Needs model", "chat_messages": [{"sender": "human", "text": "hi"}]}]
+    export.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "convert_and_analyze.py",
+            "--input",
+            str(export),
+            "--format",
+            "auto",
+            "--provider",
+            "openai",
+            "--output-root",
+            str(tmp_path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "Missing required argument: --model" in result.stderr
