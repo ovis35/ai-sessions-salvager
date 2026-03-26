@@ -36,6 +36,34 @@ class SalvageLogicTests(unittest.TestCase):
         ok, _ = ca.validate_analysis(normalized, "salvage")
         self.assertTrue(ok)
 
+    def test_b_blocker_semantics_forces_c(self):
+        obj = {
+            "topic": "定義上線審核門檻",
+            "valuable_residuals": ["上線風險檢核門檻：錯誤率 < 1% 且核心路徑通過"],
+            "drift_point": "無明顯帶偏",
+            "next_steps": ["把門檻寫入 release checklist 並指定 owner"],
+            "route_recommendation": "B",
+            "verdict": "有可留要點，但尚不足直接進入工作系統",
+        }
+        normalized = ca.normalize_salvage_analysis(obj)
+        self.assertEqual(normalized["route_recommendation"], "C")
+        ok, reason = ca.validate_analysis(normalized, "salvage")
+        self.assertTrue(ok, reason)
+
+    def test_partial_but_not_work_system_ready_is_c(self):
+        obj = {
+            "topic": "內容企劃整理",
+            "valuable_residuals": ["受眾切分原則：先看付費意圖再看互動深度"],
+            "drift_point": "後段偏靈感拋點",
+            "next_steps": ["先摘錄可用原則，暫不進規格"],
+            "route_recommendation": "B",
+            "verdict": "僅局部可摘用，未達可直接採用",
+        }
+        normalized = ca.normalize_salvage_analysis(obj)
+        self.assertEqual(normalized["route_recommendation"], "C")
+        ok, reason = ca.validate_analysis(normalized, "salvage")
+        self.assertTrue(ok, reason)
+
     def test_thin_partial_salvage_without_action_is_c(self):
         obj = {
             "topic": "討論寫作方向",
@@ -61,6 +89,23 @@ class SalvageLogicTests(unittest.TestCase):
             "next_steps": ["把門檻改寫為本產品 KPI 與歸因口徑"],
             "route_recommendation": "C",
             "verdict": "其餘多為普通內容，但上述門檻與原則可直接落地",
+        }
+        normalized = ca.normalize_salvage_analysis(obj)
+        self.assertEqual(normalized["route_recommendation"], "B")
+        ok, reason = ca.validate_analysis(normalized, "salvage")
+        self.assertTrue(ok, reason)
+
+    def test_true_work_system_ready_case_remains_b(self):
+        obj = {
+            "topic": "客訴升級處理規格",
+            "valuable_residuals": [
+                "升級門檻：連續 2 次 SLA 逾時或單筆損失超過 5 萬即轉主管",
+                "談判原則：先鎖定補償上限，再以回購折扣換取撤訴",
+            ],
+            "drift_point": "無明顯帶偏",
+            "next_steps": ["把門檻與談判原則寫入客服 runbook"],
+            "route_recommendation": "C",
+            "verdict": "可直接進入決策紀錄與 runbook，具可執行性",
         }
         normalized = ca.normalize_salvage_analysis(obj)
         self.assertEqual(normalized["route_recommendation"], "B")
