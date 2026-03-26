@@ -84,6 +84,11 @@ python convert_and_analyze.py \
 - `drift_point`
 - `next_steps`
 - `route_recommendation` (`A|B|C|D`)
+- `initial_route_recommendation`
+- `final_route_recommendation`
+- `calibration_applied`
+- `calibration_confidence`
+- `calibration_reason`
 - `verdict`
 
 ## Salvage mode behavior
@@ -103,6 +108,13 @@ Route semantics in salvage mode:
 - `C`: only partial residual value (e.g., one salvageable naming/judgment/sentence), not enough for high-grade preservation
 - `D`: overall not worth saving (low information density, routine Q&A/translation/sorting/log-like content)
 
+Salvage now uses a **two-stage hybrid flow**:
+
+1. first-pass extraction (existing salvage JSON extraction + hard guards)
+2. selective second-pass route calibration (LLM judge only for ambiguous `B/C` boundary cases)
+
+The second pass does **not** re-summarize or re-extract the conversation. It only calibrates final route recommendation from compact first-pass JSON (+ short excerpt when needed). Clear `A` and hard-rule `D` cases skip second pass to avoid unnecessary extra model calls.
+
 Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 
 ## Output files
@@ -111,9 +123,9 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 - `conv_<safe_id>.md`
 - `conv_<safe_id>.analysis.json` (when analysis is enabled)
 - `index.csv`
-  - includes `route_recommendation`, `verdict`, `valuable_residual_count`, `next_steps_count` for easier distribution review
+  - includes `route_recommendation`, `initial_route_recommendation`, `final_route_recommendation`, `calibration_applied`, `calibration_confidence`, `verdict`, `valuable_residual_count`, `next_steps_count` for easier distribution review
   - append behavior: `convert_and_analyze.py` `write_index_row()` opens `index.csv` with append mode (`"a"`), so repeated runs add rows instead of auto-overwriting or deduplicating.
-  - quick locator for maintainers: `write_index_row()` defines index fields as `id,title,source,md_file,analysis_file,route_recommendation,verdict,valuable_residual_count,next_steps_count,primary_text,summary,tags,status,error`.
+  - quick locator for maintainers: `write_index_row()` defines index fields as `id,title,source,md_file,analysis_file,route_recommendation,initial_route_recommendation,final_route_recommendation,calibration_applied,calibration_confidence,verdict,valuable_residual_count,next_steps_count,primary_text,summary,tags,status,error`.
   - for clean single-run results, remove/reset old `index.csv` first or use a fresh `--output-root`.
 
 ## Notes
