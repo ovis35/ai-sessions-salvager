@@ -70,22 +70,52 @@ def parse_chatgpt(data: Any) -> List[NormalizedConversation]:
                 if not text:
                     continue
                 ct = msg.get("create_time")
-                ts = datetime.fromtimestamp(ct, tz=timezone.utc).isoformat() if isinstance(ct, (int, float)) else None
-                messages.append(NormalizedMessage(role=author, content=text, timestamp=ts))
+                ts = (
+                    datetime.fromtimestamp(ct, tz=timezone.utc).isoformat()
+                    if isinstance(ct, (int, float))
+                    else None
+                )
+                messages.append(
+                    NormalizedMessage(role=author, content=text, timestamp=ts)
+                )
         elif "messages" in c:
             for m in c.get("messages", []):
                 text = m.get("content", "")
                 if text:
-                    messages.append(NormalizedMessage(role=m.get("role", "unknown"), content=text, timestamp=m.get("timestamp")))
+                    messages.append(
+                        NormalizedMessage(
+                            role=m.get("role", "unknown"),
+                            content=text,
+                            timestamp=m.get("timestamp"),
+                        )
+                    )
 
-        cid = c.get("id") or c.get("conversation_id") or hashlib.sha1((c.get("title", "") + str(c.get("create_time", ""))).encode()).hexdigest()[:12]
+        cid = (
+            c.get("id")
+            or c.get("conversation_id")
+            or hashlib.sha1(
+                (c.get("title", "") + str(c.get("create_time", ""))).encode()
+            ).hexdigest()[:12]
+        )
         out.append(
             NormalizedConversation(
                 id=str(cid),
                 source="chatgpt",
                 title=c.get("title") or "Untitled",
-                created_at=(datetime.fromtimestamp(c.get("create_time"), tz=timezone.utc).isoformat() if isinstance(c.get("create_time"), (int, float)) else None),
-                updated_at=(datetime.fromtimestamp(c.get("update_time"), tz=timezone.utc).isoformat() if isinstance(c.get("update_time"), (int, float)) else None),
+                created_at=(
+                    datetime.fromtimestamp(
+                        c.get("create_time"), tz=timezone.utc
+                    ).isoformat()
+                    if isinstance(c.get("create_time"), (int, float))
+                    else None
+                ),
+                updated_at=(
+                    datetime.fromtimestamp(
+                        c.get("update_time"), tz=timezone.utc
+                    ).isoformat()
+                    if isinstance(c.get("update_time"), (int, float))
+                    else None
+                ),
                 messages=messages,
             )
         )
@@ -101,14 +131,24 @@ def parse_claude(data: Any) -> List[NormalizedConversation]:
         for m in msgs:
             text = m.get("text") or m.get("content") or ""
             if isinstance(text, list):
-                text = "\n".join([t.get("text", "") if isinstance(t, dict) else str(t) for t in text])
+                text = "\n".join(
+                    [t.get("text", "") if isinstance(t, dict) else str(t) for t in text]
+                )
             if not str(text).strip():
                 continue
             role = m.get("sender") or m.get("role") or "unknown"
             ts = m.get("created_at") or m.get("timestamp")
-            messages.append(NormalizedMessage(role=role, content=str(text).strip(), timestamp=ts))
+            messages.append(
+                NormalizedMessage(role=role, content=str(text).strip(), timestamp=ts)
+            )
 
-        cid = c.get("uuid") or c.get("id") or hashlib.sha1((c.get("name", "") + str(c.get("created_at", ""))).encode()).hexdigest()[:12]
+        cid = (
+            c.get("uuid")
+            or c.get("id")
+            or hashlib.sha1(
+                (c.get("name", "") + str(c.get("created_at", ""))).encode()
+            ).hexdigest()[:12]
+        )
         out.append(
             NormalizedConversation(
                 id=str(cid),
@@ -129,7 +169,9 @@ def normalize(data: Any, fmt: str) -> List[NormalizedConversation]:
         return parse_chatgpt(data)
     if fmt == "claude":
         return parse_claude(data)
-    raise ValueError("Unsupported format. Use --format chatgpt|claude or provide supported export.")
+    raise ValueError(
+        "Unsupported format. Use --format chatgpt|claude or provide supported export."
+    )
 
 
 def render_markdown(conv: NormalizedConversation) -> str:
@@ -146,14 +188,16 @@ def render_markdown(conv: NormalizedConversation) -> str:
         "",
     ]
     for idx, m in enumerate(conv.messages, start=1):
-        lines.extend([
-            f"## Message {idx}",
-            f"**role:** {m.role}",
-            f"**time:** {m.timestamp or ''}",
-            "",
-            m.content,
-            "",
-        ])
+        lines.extend(
+            [
+                f"## Message {idx}",
+                f"**role:** {m.role}",
+                f"**time:** {m.timestamp or ''}",
+                "",
+                m.content,
+                "",
+            ]
+        )
     return "\n".join(lines).strip() + "\n"
 
 
@@ -165,7 +209,13 @@ def truncate_messages(messages: List[NormalizedMessage], max_chars: int = 18000)
     return text[:max_chars]
 
 
-def call_openai_chat(model: str, api_key: str, system_prompt: str, user_prompt: str, timeout: int = 120) -> Dict[str, Any]:
+def call_openai_chat(
+    model: str,
+    api_key: str,
+    system_prompt: str,
+    user_prompt: str,
+    timeout: int = 120,
+) -> Dict[str, Any]:
     url = "https://api.openai.com/v1/chat/completions"
     payload = {
         "model": model,
@@ -193,7 +243,14 @@ def call_openai_chat(model: str, api_key: str, system_prompt: str, user_prompt: 
 
 def validate_analysis(obj: Dict[str, Any], analysis_schema: str) -> Tuple[bool, str]:
     if analysis_schema == "salvage":
-        required = ["topic", "valuable_residuals", "drift_point", "next_steps", "route_recommendation", "verdict"]
+        required = [
+            "topic",
+            "valuable_residuals",
+            "drift_point",
+            "next_steps",
+            "route_recommendation",
+            "verdict",
+        ]
     else:
         required = ["summary", "tags", "language", "quality_score"]
 
@@ -204,12 +261,20 @@ def validate_analysis(obj: Dict[str, Any], analysis_schema: str) -> Tuple[bool, 
     if analysis_schema == "salvage":
         if not isinstance(obj["topic"], str) or not obj["topic"].strip():
             return False, "invalid_topic"
+
         if not isinstance(obj["valuable_residuals"], list):
             return False, "invalid_valuable_residuals"
         if len(obj["valuable_residuals"]) > 3:
             return False, "too_many_valuable_residuals"
+        if any(
+            not isinstance(item, str) or not item.strip()
+            for item in obj["valuable_residuals"]
+        ):
+            return False, "invalid_valuable_residuals_item"
+
         if not isinstance(obj["drift_point"], str) or not obj["drift_point"].strip():
             return False, "invalid_drift_point"
+
         if not isinstance(obj["next_steps"], list):
             return False, "invalid_next_steps"
         if len(obj["next_steps"]) > 2:
@@ -218,25 +283,28 @@ def validate_analysis(obj: Dict[str, Any], analysis_schema: str) -> Tuple[bool, 
             pass
         elif any(not isinstance(item, str) or not item.strip() for item in obj["next_steps"]):
             return False, "invalid_next_steps_item"
+
         if obj["route_recommendation"] not in {"A", "B", "C", "D"}:
             return False, "invalid_route_recommendation"
+
         if not isinstance(obj["verdict"], str) or not obj["verdict"].strip():
             return False, "invalid_verdict"
     else:
         if not isinstance(obj["summary"], str) or not obj["summary"].strip():
             return False, "invalid_summary"
-
-    if analysis_schema != "salvage":
         if not isinstance(obj["tags"], list) or not obj["tags"]:
             return False, "invalid_tags"
         if not isinstance(obj["language"], str) or not obj["language"].strip():
             return False, "invalid_language"
         if not isinstance(obj["quality_score"], (int, float)):
             return False, "invalid_quality_score"
+
     return True, "ok"
 
 
-def build_analysis_prompts(conv: NormalizedConversation, analysis_schema: str) -> Tuple[str, str]:
+def build_analysis_prompts(
+    conv: NormalizedConversation, analysis_schema: str
+) -> Tuple[str, str]:
     if analysis_schema == "salvage":
         system_prompt = (
             "你是對話殘渣打撈器。目標是 residue salvage，不是一般摘要。\n"
@@ -315,7 +383,12 @@ def analyze_conversation(
         try:
             if provider != "openai":
                 raise ValueError("Only provider=openai is implemented in this version")
-            result = call_openai_chat(model=model, api_key=api_key, system_prompt=system_prompt, user_prompt=user_prompt)
+            result = call_openai_chat(
+                model=model,
+                api_key=api_key,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
             ok, reason = validate_analysis(result, analysis_schema=analysis_schema)
             if ok:
                 return {"schema": analysis_schema, "status": "ok", **result}
@@ -323,31 +396,52 @@ def analyze_conversation(
         except Exception as e:
             last_error = str(e)
         if i < retries:
-            time.sleep(2 ** i)
+            time.sleep(2**i)
     return failed_analysis_result(analysis_schema=analysis_schema, error=last_error)
 
 
 def write_index_row(index_path: Path, row: Dict[str, Any]) -> None:
     exists = index_path.exists()
-    fields = ["id", "title", "source", "md_file", "analysis_file", "primary_text", "summary", "tags", "status", "error"]
+    fields = [
+        "id",
+        "title",
+        "source",
+        "md_file",
+        "analysis_file",
+        "primary_text",
+        "summary",
+        "tags",
+        "status",
+        "error",
+    ]
     with index_path.open("a", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         if not exists:
             w.writeheader()
-        w.writerow({
-            **row,
-            "tags": ";".join(row.get("tags", [])) if isinstance(row.get("tags"), list) else row.get("tags", ""),
-        })
+        w.writerow(
+            {
+                **row,
+                "tags": ";".join(row.get("tags", []))
+                if isinstance(row.get("tags"), list)
+                else row.get("tags", ""),
+            }
+        )
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Convert official conversation exports to markdown and batch-analyze via LLM.")
+    p = argparse.ArgumentParser(
+        description="Convert official conversation exports to markdown and batch-analyze via LLM."
+    )
     p.add_argument("--input", required=True)
     p.add_argument("--format", default="auto", choices=["auto", "chatgpt", "claude"])
     p.add_argument("--provider", default="openai")
     p.add_argument("--model")
     p.add_argument("--api-key-env", default="OPENAI_API_KEY")
-    p.add_argument("--skip-analysis", action="store_true", help="Convert to markdown and index.csv only; skip LLM analysis.")
+    p.add_argument(
+        "--skip-analysis",
+        action="store_true",
+        help="Convert to markdown and index.csv only; skip LLM analysis.",
+    )
     p.add_argument("--analysis-schema", default="default", choices=["default", "salvage"])
     p.add_argument("--output-root", default=".")
     p.add_argument("--max-concurrency", type=int, default=5)
@@ -389,61 +483,90 @@ def main() -> int:
         md_path.write_text(render_markdown(conv), encoding="utf-8")
 
         if args.skip_analysis:
-            write_index_row(index_path, {
-                "id": conv.id,
-                "title": conv.title,
-                "source": conv.source,
-                "md_file": md_name,
-                "analysis_file": "",
-                "primary_text": "",
-                "summary": "",
-                "tags": [],
-                "status": "converted",
-                "error": "",
-            })
+            write_index_row(
+                index_path,
+                {
+                    "id": conv.id,
+                    "title": conv.title,
+                    "source": conv.source,
+                    "md_file": md_name,
+                    "analysis_file": "",
+                    "primary_text": "",
+                    "summary": "",
+                    "tags": [],
+                    "status": "converted",
+                    "error": "",
+                },
+            )
             continue
 
         if args.resume and an_path.exists() and not args.force:
-            write_index_row(index_path, {
-                "id": conv.id,
-                "title": conv.title,
-                "source": conv.source,
-                "md_file": md_name,
-                "analysis_file": an_name,
-                "primary_text": "",
-                "summary": "",
-                "tags": [],
-                "status": "skipped",
-                "error": "",
-            })
-            continue
-        jobs.append((conv, an_path, md_name, an_name))
-
-    if not args.skip_analysis:
-        with ThreadPoolExecutor(max_workers=max(1, args.max_concurrency)) as ex:
-            fut_map = {
-                ex.submit(analyze_conversation, conv, args.model, args.provider, api_key, args.retry, args.analysis_schema): (conv, an_path, md_name, an_name)
-                for conv, an_path, md_name, an_name in jobs
-            }
-            for fut in as_completed(fut_map):
-                conv, an_path, md_name, an_name = fut_map[fut]
-                result = fut.result()
-                an_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-                primary_text = result.get("verdict", "") if args.analysis_schema == "salvage" else result.get("summary", "")
-                write_index_row(index_path, {
+            write_index_row(
+                index_path,
+                {
                     "id": conv.id,
                     "title": conv.title,
                     "source": conv.source,
                     "md_file": md_name,
                     "analysis_file": an_name,
-                    "primary_text": primary_text,
-                    "summary": result.get("summary", ""),
-                    "tags": result.get("tags", []),
-                    "status": result.get("status", "unknown"),
-                    "error": result.get("error", ""),
-                })
+                    "primary_text": "",
+                    "summary": "",
+                    "tags": [],
+                    "status": "skipped",
+                    "error": "",
+                },
+            )
+            continue
 
-    print(f"Done at {iso_now()}. conversations={len(conversations)}")
+        jobs.append((conv, an_path, md_name, an_name))
+
+    if not args.skip_analysis:
+        with ThreadPoolExecutor(max_workers=max(1, args.max_concurrency)) as ex:
+            fut_map = {
+                ex.submit(
+                    analyze_conversation,
+                    conv,
+                    args.model,
+                    args.provider,
+                    api_key,
+                    args.retry,
+                    args.analysis_schema,
+                ): (conv, an_path, md_name, an_name)
+                for conv, an_path, md_name, an_name in jobs
+            }
+
+            for fut in as_completed(fut_map):
+                conv, an_path, md_name, an_name = fut_map[fut]
+                result = fut.result()
+                an_path.write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                primary_text = (
+                    result.get("verdict", "")
+                    if args.analysis_schema == "salvage"
+                    else result.get("summary", "")
+                )
+                write_index_row(
+                    index_path,
+                    {
+                        "id": conv.id,
+                        "title": conv.title,
+                        "source": conv.source,
+                        "md_file": md_name,
+                        "analysis_file": an_name,
+                        "primary_text": primary_text,
+                        "summary": result.get("summary", ""),
+                        "tags": result.get("tags", []),
+                        "status": result.get("status", "unknown"),
+                        "error": result.get("error", ""),
+                    },
+                )
+
+    print(
+        f"Done at {iso_now()}. conversations={len(conversations)} "
+        f"skip_analysis={args.skip_analysis} analysis_schema={args.analysis_schema}"
+    )
     return 0
 
 

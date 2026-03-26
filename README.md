@@ -25,11 +25,7 @@ python convert_and_analyze.py \
   --format auto \
   --output-root . \
   --skip-analysis
-```
-
-### Default analysis schema (`summary/tags/language/quality_score`)
-
-```bash
+Default analysis schema (summary/tags/language/quality_score)
 python convert_and_analyze.py \
   --input export.json \
   --format auto \
@@ -39,11 +35,7 @@ python convert_and_analyze.py \
   --max-concurrency 5 \
   --retry 3 \
   --resume
-```
-
-### Salvage analysis schema
-
-```bash
+Salvage analysis schema
 python convert_and_analyze.py \
   --input export.json \
   --format auto \
@@ -52,28 +44,27 @@ python convert_and_analyze.py \
   --analysis-schema salvage \
   --output-root . \
   --resume
-```
 
 Salvage mode outputs JSON fields:
-- `topic`
-- `valuable_residuals`
-- `drift_point`
-- `next_steps`
-- `route_recommendation` (`A|B|C|D`)
-- `verdict`
+
+topic
+valuable_residuals
+drift_point
+next_steps
+route_recommendation (A|B|C|D)
+verdict
 
 Salvage mode is intentionally strict residue salvage, not generic summarization:
-- prefer omission over over-inclusion
-- avoid flattery/beautification
-- keep only genuinely valuable residuals
 
-## Output files (in `--output-root`, default `.`)
-- `conv_<safe_id>.md`
-- `conv_<safe_id>.analysis.json` (when analysis is enabled)
-- `index.csv`
-
-## Notes
-- Current implementation supports `provider=openai`.
-- `--model` is required unless `--skip-analysis` is used.
-- `--analysis-schema` supports `default|salvage` (default: `default`).
-- If `--resume` is enabled and analysis file exists, that conversation is skipped unless `--force` is provided.
+prefer omission over over-inclusion
+avoid flattery or beautification
+keep only genuinely valuable residuals
+Output files (in --output-root, default .)
+conv_<safe_id>.md
+conv_<safe_id>.analysis.json (when analysis is enabled)
+index.csv
+Notes
+Current implementation supports provider=openai.
+--model is required unless --skip-analysis is used.
+--analysis-schema supports default|salvage (default: default).
+If --resume is enabled and analysis file exists, that conversation is skipped unless --force is provided.
