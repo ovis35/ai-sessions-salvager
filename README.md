@@ -110,12 +110,15 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 - `conv_<safe_id>.analysis.json` (when analysis is enabled)
 - `index.csv`
   - includes `route_recommendation`, `verdict`, `valuable_residual_count`, `next_steps_count` for easier distribution review
+  - written by `write_index_row()` in append mode; existing rows are not automatically deduplicated or overwritten
+  - header/columns align with `id,title,source,md_file,analysis_file,...` in `convert_and_analyze.py` for quick cross-reference
 
 ## Notes
 - Current implementation supports `provider=openai`.
 - `--model` is required unless `--skip-analysis` is used.
 - `--analysis-schema` supports `default|salvage` (default: `default`).
 - If `--resume` is enabled and analysis file exists, that conversation is skipped unless `--force` is provided.
+- For a clean one-off run, clear/delete old `index.csv` first, or write to a separate `--output-root`.
 
 ## Privacy/Safety
 - 轉換出的 `conv_*.md`、`conv_*.analysis.json` 與 `index.csv` 可能包含敏感資訊（例如個資、內部討論、API 片段）。
