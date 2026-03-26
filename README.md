@@ -4,10 +4,10 @@ Batch-convert official ChatGPT/Claude export JSON into one markdown file per con
 
 ## Features
 - Parse `chatgpt` / `claude` export JSON (`--format auto` supported)
-- Write one `conv_<id>.md` per conversation
+- Write one `conv_<safe_id>.md` per conversation
 - Convert-only mode (`--skip-analysis`) with no API calls required
 - Batch call LLM API for either default summary schema or strict residue-salvage schema
-- Write one `conv_<id>.analysis.json` per conversation
+- Write one `conv_<safe_id>.analysis.json` per conversation
 - Maintain `index.csv`
 - Supports retries + resume/force
 
@@ -119,8 +119,9 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 - `--model` is required unless `--skip-analysis` is used.
 - `--analysis-schema` supports `default|salvage` (default: `default`).
 - If `--resume` is enabled and analysis file exists, that conversation is skipped unless `--force` is provided.
+- For a clean one-off run, clear/delete old `index.csv` first, or write to a separate `--output-root`.
 
 ## Privacy/Safety
-- 轉換出的 `conv_*.md`、`conv_*.analysis.json` 與 `index.csv` 可能包含敏感資訊（例如個資、內部討論、API 片段）。
+- 轉換出的 `conv_<safe_id>.md`、`conv_<safe_id>.analysis.json` 與 `index.csv` 可能包含敏感資訊（例如個資、內部討論、API 片段）。
 - 建議把輸出寫到獨立資料夾（例如 `--output-root ./output`），並確保該資料夾與輸出檔案不提交到版本控制。
 - 本 repo 已提供 `.gitignore` 預設忽略上述輸出與 `output/` 目錄，請在提交前再次確認。
