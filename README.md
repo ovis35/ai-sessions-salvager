@@ -110,6 +110,9 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 - `conv_<safe_id>.analysis.json` (when analysis is enabled)
 - `index.csv`
   - includes `route_recommendation`, `verdict`, `valuable_residual_count`, `next_steps_count` for easier distribution review
+  - append behavior: `convert_and_analyze.py` `write_index_row()` opens `index.csv` with append mode (`"a"`), so repeated runs add rows instead of auto-overwriting or deduplicating.
+  - quick locator for maintainers: `write_index_row()` defines index fields as `id,title,source,md_file,analysis_file,route_recommendation,verdict,valuable_residual_count,next_steps_count,primary_text,summary,tags,status,error`.
+  - for clean single-run results, remove/reset old `index.csv` first or use a fresh `--output-root`.
 
 ## Notes
 - Current implementation supports `provider=openai`.
