@@ -92,3 +92,7 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 - `--model` is required unless `--skip-analysis` is used.
 - `--analysis-schema` supports `default|salvage` (default: `default`).
 - If `--resume` is enabled and analysis file exists, that conversation is skipped unless `--force` is provided.
+
+## License
+
+This project is licensed under the **MIT License**. See [`LICENSE`](./LICENSE).
