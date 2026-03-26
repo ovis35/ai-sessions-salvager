@@ -117,6 +117,14 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 
 Note: different original conversation IDs can theoretically normalize to the same `safe_id`, so filenames are not guaranteed to be a strict one-to-one mapping from raw IDs.
 
+Filename details:
+
+- Output filenames are explicitly `conv_<safe_id>.md` and `conv_<safe_id>.analysis.json`.
+- `safe_id` follows `safe_id()` in `convert_and_analyze.py`:
+  - Replace every non `[a-zA-Z0-9_.-]` character with `_`.
+  - Truncate to a maximum length of 80 characters.
+- Because IDs are normalized this way, collisions are theoretically possible; do not assume strict one-to-one raw-id filename identity.
+
 ## Notes
 - Current implementation supports `provider=openai`.
 - `--model` is required unless `--skip-analysis` is used.
