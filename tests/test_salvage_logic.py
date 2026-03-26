@@ -74,6 +74,28 @@ class SalvageLogicTests(unittest.TestCase):
         ok, reason = ca.validate_analysis(obj, "default")
         self.assertTrue(ok, reason)
 
+    def test_infer_format_dict_chatgpt(self):
+        data = {
+            "conversations": [
+                {
+                    "conversation_id": "c1",
+                    "mapping": {},
+                }
+            ]
+        }
+        self.assertEqual(ca.infer_format(data), "chatgpt")
+
+    def test_infer_format_dict_claude(self):
+        data = {
+            "conversations": [
+                {
+                    "uuid": "u1",
+                    "chat_messages": [],
+                }
+            ]
+        }
+        self.assertEqual(ca.infer_format(data), "claude")
+
     def test_cli_sample_resume_force_skip_analysis(self):
         data = [
             {

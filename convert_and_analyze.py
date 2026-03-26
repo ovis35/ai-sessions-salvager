@@ -46,9 +46,17 @@ def infer_format(data: Any) -> str:
             return "chatgpt"
         if "chat_messages" in data[0] or "uuid" in data[0]:
             return "claude"
-    if isinstance(data, dict):
-        if "conversations" in data:
-            return "chatgpt"
+
+    if isinstance(data, dict) and isinstance(data.get("conversations"), list):
+        conversations = data.get("conversations", [])
+        if conversations and isinstance(conversations[0], dict):
+            first = conversations[0]
+            if "mapping" in first or "conversation_id" in first:
+                return "chatgpt"
+            if "chat_messages" in first or "uuid" in first:
+                return "claude"
+        return "unknown"
+
     return "unknown"
 
 
@@ -165,6 +173,10 @@ def parse_claude(data: Any) -> List[NormalizedConversation]:
 def normalize(data: Any, fmt: str) -> List[NormalizedConversation]:
     if fmt == "auto":
         fmt = infer_format(data)
+        if fmt == "unknown":
+            raise ValueError(
+                "Could not infer format from input. Please specify --format chatgpt or --format claude."
+            )
     if fmt == "chatgpt":
         return parse_chatgpt(data)
     if fmt == "claude":
@@ -607,7 +619,10 @@ def main() -> int:
     out_root.mkdir(parents=True, exist_ok=True)
 
     data = json.loads(input_path.read_text(encoding="utf-8"))
-    conversations = normalize(data, args.format)
+    try:
+        conversations = normalize(data, args.format)
+    except ValueError as e:
+        p.error(str(e))
     if args.sample:
         conversations = conversations[: args.sample]
 
