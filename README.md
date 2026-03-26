@@ -15,6 +15,30 @@ Batch-convert official ChatGPT/Claude export JSON into one markdown file per con
 - Python 3.10+
 - OpenAI-compatible API key in env var (default `OPENAI_API_KEY`) only when analysis is enabled
 
+## Development
+
+### 1) Create and activate a virtual environment
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+### 2) Install development dependencies
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install tox
+```
+
+### 3) Run tests
+
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+# or
+python -m tox
+```
+
 ## Usage
 
 ### Convert-only mode (no model/API key required)
