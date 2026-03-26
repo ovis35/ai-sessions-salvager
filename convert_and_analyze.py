@@ -165,15 +165,15 @@ def truncate_messages(messages: List[NormalizedMessage], max_chars: int = 18000)
     return text[:max_chars]
 
 
-def call_openai_chat(model: str, api_key: str, prompt: str, timeout: int = 120) -> Dict[str, Any]:
+def call_openai_chat(model: str, api_key: str, system_prompt: str, user_prompt: str, timeout: int = 120) -> Dict[str, Any]:
     url = "https://api.openai.com/v1/chat/completions"
     payload = {
         "model": model,
         "temperature": 0.2,
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": "Return only valid JSON with keys: summary, tags, language, quality_score."},
-            {"role": "user", "content": prompt},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ],
     }
     req = urllib.request.Request(
@@ -191,54 +191,126 @@ def call_openai_chat(model: str, api_key: str, prompt: str, timeout: int = 120) 
     return json.loads(content)
 
 
-def validate_analysis(obj: Dict[str, Any]) -> Tuple[bool, str]:
-    required = ["summary", "tags", "language", "quality_score"]
+def validate_analysis(obj: Dict[str, Any], analysis_schema: str) -> Tuple[bool, str]:
+    if analysis_schema == "salvage":
+        required = ["topic", "valuable_residuals", "drift_point", "next_steps", "tags", "language", "quality_score"]
+    else:
+        required = ["summary", "tags", "language", "quality_score"]
+
     for k in required:
         if k not in obj:
             return False, f"missing_{k}"
-    if not isinstance(obj["summary"], str) or not obj["summary"].strip():
-        return False, "invalid_summary"
+
+    if analysis_schema == "salvage":
+        if not isinstance(obj["topic"], str) or not obj["topic"].strip():
+            return False, "invalid_topic"
+        if not isinstance(obj["valuable_residuals"], list):
+            return False, "invalid_valuable_residuals"
+        if len(obj["valuable_residuals"]) > 3:
+            return False, "too_many_valuable_residuals"
+        if not isinstance(obj["drift_point"], str) or not obj["drift_point"].strip():
+            return False, "invalid_drift_point"
+        if not isinstance(obj["next_steps"], list):
+            return False, "invalid_next_steps"
+        if len(obj["next_steps"]) > 2:
+            return False, "too_many_next_steps"
+    else:
+        if not isinstance(obj["summary"], str) or not obj["summary"].strip():
+            return False, "invalid_summary"
+
     if not isinstance(obj["tags"], list) or not obj["tags"]:
         return False, "invalid_tags"
+    if not isinstance(obj["language"], str) or not obj["language"].strip():
+        return False, "invalid_language"
     if not isinstance(obj["quality_score"], (int, float)):
         return False, "invalid_quality_score"
     return True, "ok"
 
 
-def analyze_conversation(conv: NormalizedConversation, model: str, provider: str, api_key: str, retries: int) -> Dict[str, Any]:
-    prompt = (
-        "Analyze the following conversation and return JSON fields: "
-        "summary (concise), tags (array 1-12), language (ISO-like code), quality_score (0-100).\n\n"
+def build_analysis_prompts(conv: NormalizedConversation, analysis_schema: str) -> Tuple[str, str]:
+    if analysis_schema == "salvage":
+        system_prompt = (
+            "Return JSON only. Be strict, restrained, and concise. Do not flatter. "
+            "Do not pad weak material.\n"
+            "Required keys: topic, valuable_residuals, drift_point, next_steps, tags, language, quality_score.\n"
+            "Rules: topic is one sentence; valuable_residuals is an array of 0-3 concise items; "
+            "drift_point is one sentence and use 無明顯帶偏 if none; next_steps is an array of 0-2 concrete next steps; "
+            "tags is an array; language is a locale-like code; quality_score is 0-100."
+        )
+        user_prompt = (
+            "Analyze this conversation residue and extract salvage value.\n\n"
+            f"Title: {conv.title}\n"
+            f"Conversation:\n{truncate_messages(conv.messages)}"
+        )
+        return system_prompt, user_prompt
+
+    system_prompt = (
+        "Return JSON only. Be strict, restrained, and concise. Do not flatter. Do not pad weak material.\n"
+        "Required keys: summary, tags, language, quality_score.\n"
+        "Rules: summary concise; tags is an array (1-12); language is a locale-like code; quality_score is 0-100."
+    )
+    user_prompt = (
+        "Analyze this conversation.\n\n"
         f"Title: {conv.title}\n"
         f"Conversation:\n{truncate_messages(conv.messages)}"
     )
-    last_error = "unknown"
-    for i in range(retries + 1):
-        try:
-            if provider != "openai":
-                raise ValueError("Only provider=openai is implemented in this version")
-            result = call_openai_chat(model=model, api_key=api_key, prompt=prompt)
-            ok, reason = validate_analysis(result)
-            if ok:
-                return {"status": "ok", **result}
-            last_error = reason
-        except Exception as e:
-            last_error = str(e)
-        if i < retries:
-            time.sleep(2 ** i)
+    return system_prompt, user_prompt
+
+
+def failed_analysis_result(analysis_schema: str, error: str) -> Dict[str, Any]:
+    if analysis_schema == "salvage":
+        return {
+            "schema": analysis_schema,
+            "status": "failed",
+            "topic": "",
+            "valuable_residuals": [],
+            "drift_point": "",
+            "next_steps": [],
+            "tags": [],
+            "language": "",
+            "quality_score": 0,
+            "error": error,
+        }
     return {
+        "schema": analysis_schema,
         "status": "failed",
         "summary": "",
         "tags": [],
         "language": "",
         "quality_score": 0,
-        "error": last_error,
+        "error": error,
     }
+
+
+def analyze_conversation(
+    conv: NormalizedConversation,
+    model: str,
+    provider: str,
+    api_key: str,
+    retries: int,
+    analysis_schema: str,
+) -> Dict[str, Any]:
+    system_prompt, user_prompt = build_analysis_prompts(conv, analysis_schema)
+    last_error = "unknown"
+    for i in range(retries + 1):
+        try:
+            if provider != "openai":
+                raise ValueError("Only provider=openai is implemented in this version")
+            result = call_openai_chat(model=model, api_key=api_key, system_prompt=system_prompt, user_prompt=user_prompt)
+            ok, reason = validate_analysis(result, analysis_schema=analysis_schema)
+            if ok:
+                return {"schema": analysis_schema, "status": "ok", **result}
+            last_error = reason
+        except Exception as e:
+            last_error = str(e)
+        if i < retries:
+            time.sleep(2 ** i)
+    return failed_analysis_result(analysis_schema=analysis_schema, error=last_error)
 
 
 def write_index_row(index_path: Path, row: Dict[str, Any]) -> None:
     exists = index_path.exists()
-    fields = ["id", "title", "source", "md_file", "analysis_file", "summary", "tags", "status", "error"]
+    fields = ["id", "title", "source", "md_file", "analysis_file", "primary_text", "summary", "tags", "status", "error"]
     with index_path.open("a", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         if not exists:
@@ -254,8 +326,10 @@ def main() -> int:
     p.add_argument("--input", required=True)
     p.add_argument("--format", default="auto", choices=["auto", "chatgpt", "claude"])
     p.add_argument("--provider", default="openai")
-    p.add_argument("--model", required=True)
+    p.add_argument("--model")
     p.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    p.add_argument("--skip-analysis", action="store_true", help="Convert to markdown and index.csv only; skip LLM analysis.")
+    p.add_argument("--analysis-schema", default="default", choices=["default", "salvage"])
     p.add_argument("--output-root", default=".")
     p.add_argument("--max-concurrency", type=int, default=5)
     p.add_argument("--retry", type=int, default=3)
@@ -264,10 +338,15 @@ def main() -> int:
     p.add_argument("--sample", type=int)
     args = p.parse_args()
 
-    api_key = os.getenv(args.api_key_env)
-    if not api_key:
-        print(f"Missing API key env: {args.api_key_env}", file=sys.stderr)
-        return 2
+    if not args.skip_analysis and not args.model:
+        p.error("--model is required unless --skip-analysis is used")
+
+    api_key = ""
+    if not args.skip_analysis:
+        api_key = os.getenv(args.api_key_env, "")
+        if not api_key:
+            print(f"Missing API key env: {args.api_key_env}", file=sys.stderr)
+            return 2
 
     input_path = Path(args.input)
     out_root = Path(args.output_root)
@@ -290,6 +369,21 @@ def main() -> int:
 
         md_path.write_text(render_markdown(conv), encoding="utf-8")
 
+        if args.skip_analysis:
+            write_index_row(index_path, {
+                "id": conv.id,
+                "title": conv.title,
+                "source": conv.source,
+                "md_file": md_name,
+                "analysis_file": "",
+                "primary_text": "",
+                "summary": "",
+                "tags": [],
+                "status": "converted",
+                "error": "",
+            })
+            continue
+
         if args.resume and an_path.exists() and not args.force:
             write_index_row(index_path, {
                 "id": conv.id,
@@ -297,6 +391,7 @@ def main() -> int:
                 "source": conv.source,
                 "md_file": md_name,
                 "analysis_file": an_name,
+                "primary_text": "",
                 "summary": "",
                 "tags": [],
                 "status": "skipped",
@@ -305,26 +400,29 @@ def main() -> int:
             continue
         jobs.append((conv, an_path, md_name, an_name))
 
-    with ThreadPoolExecutor(max_workers=max(1, args.max_concurrency)) as ex:
-        fut_map = {
-            ex.submit(analyze_conversation, conv, args.model, args.provider, api_key, args.retry): (conv, an_path, md_name, an_name)
-            for conv, an_path, md_name, an_name in jobs
-        }
-        for fut in as_completed(fut_map):
-            conv, an_path, md_name, an_name = fut_map[fut]
-            result = fut.result()
-            an_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-            write_index_row(index_path, {
-                "id": conv.id,
-                "title": conv.title,
-                "source": conv.source,
-                "md_file": md_name,
-                "analysis_file": an_name,
-                "summary": result.get("summary", ""),
-                "tags": result.get("tags", []),
-                "status": result.get("status", "unknown"),
-                "error": result.get("error", ""),
-            })
+    if not args.skip_analysis:
+        with ThreadPoolExecutor(max_workers=max(1, args.max_concurrency)) as ex:
+            fut_map = {
+                ex.submit(analyze_conversation, conv, args.model, args.provider, api_key, args.retry, args.analysis_schema): (conv, an_path, md_name, an_name)
+                for conv, an_path, md_name, an_name in jobs
+            }
+            for fut in as_completed(fut_map):
+                conv, an_path, md_name, an_name = fut_map[fut]
+                result = fut.result()
+                an_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+                primary_text = result.get("topic", "") if args.analysis_schema == "salvage" else result.get("summary", "")
+                write_index_row(index_path, {
+                    "id": conv.id,
+                    "title": conv.title,
+                    "source": conv.source,
+                    "md_file": md_name,
+                    "analysis_file": an_name,
+                    "primary_text": primary_text,
+                    "summary": result.get("summary", ""),
+                    "tags": result.get("tags", []),
+                    "status": result.get("status", "unknown"),
+                    "error": result.get("error", ""),
+                })
 
     print(f"Done at {iso_now()}. conversations={len(conversations)}")
     return 0
