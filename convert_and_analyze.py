@@ -219,7 +219,7 @@ def call_openai_chat(
     url = "https://api.openai.com/v1/chat/completions"
     payload = {
         "model": model,
-        "temperature": 0.2,
+        "temperature": 0,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -239,6 +239,116 @@ def call_openai_chat(
         body = json.loads(resp.read().decode("utf-8"))
     content = body["choices"][0]["message"]["content"]
     return json.loads(content)
+
+
+def normalize_text_list(value: Any, max_items: int) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    cleaned = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if text:
+            cleaned.append(text)
+    return cleaned[:max_items]
+
+
+def is_no_action_step(step: str) -> bool:
+    text = step.strip().lower()
+    if text in {"暫不行動", "no action", "none", "n/a"}:
+        return True
+    return "暫不行動" in text or "不需行動" in text
+
+
+def has_actionable_next_steps(next_steps: List[str]) -> bool:
+    if not next_steps:
+        return False
+    return any(not is_no_action_step(step) for step in next_steps)
+
+
+def detect_verdict_semantics(verdict: str) -> Dict[str, bool]:
+    text = verdict.strip().lower()
+    not_worth_markers = [
+        "不值得保存",
+        "不值得留",
+        "不必保存",
+        "整體不值得",
+        "資訊密度太低",
+        "資訊密度不高",
+        "普通問答",
+        "流水帳",
+        "not worth",
+        "low information",
+    ]
+    partial_markers = [
+        "只有局部",
+        "局部可留",
+        "其餘多為普通",
+        "需重寫才值得留",
+        "部分可留",
+        "僅留一點",
+        "partial salvage",
+        "thin residual",
+        "needs rewrite",
+    ]
+    explicit_not_worth = any(marker in text for marker in not_worth_markers)
+    partial_salvage = any(marker in text for marker in partial_markers)
+    return {
+        "explicit_not_worth": explicit_not_worth,
+        "partial_salvage": partial_salvage,
+    }
+
+
+def build_salvage_signals(obj: Dict[str, Any]) -> Dict[str, Any]:
+    residuals = normalize_text_list(obj.get("valuable_residuals"), max_items=3)
+    next_steps = normalize_text_list(obj.get("next_steps"), max_items=2)
+    verdict = str(obj.get("verdict", "")).strip()
+    semantics = detect_verdict_semantics(verdict)
+    residual_count = len(residuals)
+    actionable = has_actionable_next_steps(next_steps)
+    thin_residual = residual_count <= 1
+    return {
+        "residuals": residuals,
+        "next_steps": next_steps,
+        "verdict": verdict,
+        "residual_count": residual_count,
+        "has_actionable_steps": actionable,
+        "thin_residual": thin_residual,
+        **semantics,
+    }
+
+
+def normalize_salvage_analysis(obj: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(obj)
+    normalized["topic"] = str(normalized.get("topic", "")).strip()
+    normalized["drift_point"] = str(normalized.get("drift_point", "")).strip()
+    normalized["verdict"] = str(normalized.get("verdict", "")).strip()
+    normalized["valuable_residuals"] = normalize_text_list(
+        normalized.get("valuable_residuals"), max_items=3
+    )
+    normalized["next_steps"] = normalize_text_list(normalized.get("next_steps"), max_items=2)
+
+    route = str(normalized.get("route_recommendation", "")).strip().upper()
+    signals = build_salvage_signals(normalized)
+
+    if signals["explicit_not_worth"] or (
+        signals["residual_count"] == 0 and not signals["has_actionable_steps"]
+    ):
+        route = "D"
+    elif signals["thin_residual"] and not signals["has_actionable_steps"]:
+        route = "C"
+    elif signals["partial_salvage"] and route in {"A", "B"}:
+        route = "C"
+    elif route == "A" and (
+        signals["thin_residual"] or not signals["has_actionable_steps"]
+    ):
+        route = "C"
+    elif route == "B" and signals["residual_count"] == 0:
+        route = "C" if signals["has_actionable_steps"] else "D"
+
+    normalized["route_recommendation"] = route
+    return normalized
 
 
 def validate_analysis(obj: Dict[str, Any], analysis_schema: str) -> Tuple[bool, str]:
@@ -289,6 +399,27 @@ def validate_analysis(obj: Dict[str, Any], analysis_schema: str) -> Tuple[bool, 
 
         if not isinstance(obj["verdict"], str) or not obj["verdict"].strip():
             return False, "invalid_verdict"
+
+        signals = build_salvage_signals(obj)
+        route = obj["route_recommendation"]
+
+        if signals["residual_count"] == 0 and not signals["has_actionable_steps"] and route != "D":
+            return False, "semantic_empty_must_be_d"
+
+        if route == "A":
+            if signals["residual_count"] < 2:
+                return False, "semantic_a_requires_strong_residuals"
+            if signals["thin_residual"] or signals["partial_salvage"]:
+                return False, "semantic_a_reject_partial_salvage"
+
+        if signals["thin_residual"] and not signals["has_actionable_steps"] and route in {"A", "B"}:
+            return False, "semantic_thin_residual_c_or_d_only"
+
+        if signals["explicit_not_worth"] and route != "D":
+            return False, "semantic_not_worth_must_be_d"
+
+        if signals["partial_salvage"] and route == "A":
+            return False, "semantic_partial_salvage_not_a"
     else:
         if not isinstance(obj["summary"], str) or not obj["summary"].strip():
             return False, "invalid_summary"
@@ -308,8 +439,12 @@ def build_analysis_prompts(
     if analysis_schema == "salvage":
         system_prompt = (
             "你是對話殘渣打撈器。目標是 residue salvage，不是一般摘要。\n"
+            "評分預設請偏向 C 或 D。A/B 必須稀少，只有證據非常明確才可使用。\n"
+            "若不確定，往低評，不往高評。不要因為回覆完整、漂亮、有條理而高估價值。\n"
             "請嚴格、克制、少廢話，只輸出真正值得留下的內容。不要討好，不要美化普通內容，不要重述整段聊天。\n"
-            "寧可少，不可濫；偏向省略，不要過度收錄。若無價值，請輸出空陣列或對應的「無／暫不行動」。\n"
+            "普通問答、一般翻譯、課後對答案、資訊整理、客套鼓勵、模糊靈感、無後續影響討論，通常直接判 D。\n"
+            "如果只有局部可回收殘留（例如只剩 1 個命名/框架/判斷/好句），不足支撐整段保存，優先判 C。\n"
+            "valuable_residuals 寧缺勿濫；next_steps 只保留有壓力且可執行的下一步。\n"
             "盡量將整體結果控制在 250 個中文字以內。\n"
             "只輸出 JSON 物件，且 key 必須且只能是："
             "topic, valuable_residuals, drift_point, next_steps, route_recommendation, verdict。\n"
@@ -319,14 +454,14 @@ def build_analysis_prompts(
             "- drift_point：一句話指出最明顯帶偏；沒有就必須是「無明顯帶偏」。\n"
             "- next_steps：0-2 條最值得做的具體下一步；若不值得行動就 [\"暫不行動\"]；避免空泛建議。\n"
             "- route_recommendation：只能是 A/B/C/D 其中一個。\n"
-            "  A=長期知識/原則/模型/人物理解/方法論；"
-            "  B=專案決策/任務/規格/待辦/執行狀態；"
-            "  C=靈感/句子/刺點/暫時提醒；"
-            "  D=不值得保存。\n"
-            "- verdict：一句更銳利但準確的判決，回答值不值得留下。"
+            "  A=高價值且可直接保存為長期知識、原則、模型、框架；"
+            "  B=有明確可執行價值，可進入專案、規格、任務、決策紀錄；"
+            "  C=只有局部殘留可救，不足以支撐整段高評；"
+            "  D=整體不值得保存，或資訊密度太低，或只是普通內容。\n"
+            "- verdict：一句更銳利但準確的判決，必須直接說清楚是否值得保存。"
         )
         user_prompt = (
-            "請依規則輸出殘渣打撈結果。\n\n"
+            "請依規則輸出殘渣打撈結果。記住：預設 C/D，A/B 需高門檻證據。\n\n"
             f"Title: {conv.title}\n"
             f"Conversation:\n{truncate_messages(conv.messages)}"
         )
@@ -389,6 +524,8 @@ def analyze_conversation(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
             )
+            if analysis_schema == "salvage":
+                result = normalize_salvage_analysis(result)
             ok, reason = validate_analysis(result, analysis_schema=analysis_schema)
             if ok:
                 return {"schema": analysis_schema, "status": "ok", **result}
@@ -408,6 +545,10 @@ def write_index_row(index_path: Path, row: Dict[str, Any]) -> None:
         "source",
         "md_file",
         "analysis_file",
+        "route_recommendation",
+        "verdict",
+        "valuable_residual_count",
+        "next_steps_count",
         "primary_text",
         "summary",
         "tags",
@@ -491,6 +632,10 @@ def main() -> int:
                     "source": conv.source,
                     "md_file": md_name,
                     "analysis_file": "",
+                    "route_recommendation": "",
+                    "verdict": "",
+                    "valuable_residual_count": "",
+                    "next_steps_count": "",
                     "primary_text": "",
                     "summary": "",
                     "tags": [],
@@ -509,6 +654,10 @@ def main() -> int:
                     "source": conv.source,
                     "md_file": md_name,
                     "analysis_file": an_name,
+                    "route_recommendation": "",
+                    "verdict": "",
+                    "valuable_residual_count": "",
+                    "next_steps_count": "",
                     "primary_text": "",
                     "summary": "",
                     "tags": [],
@@ -550,6 +699,14 @@ def main() -> int:
                 write_index_row(
                     index_path,
                     {
+                        "route_recommendation": result.get("route_recommendation", ""),
+                        "verdict": result.get("verdict", ""),
+                        "valuable_residual_count": len(result.get("valuable_residuals", []))
+                        if isinstance(result.get("valuable_residuals"), list)
+                        else "",
+                        "next_steps_count": len(result.get("next_steps", []))
+                        if isinstance(result.get("next_steps"), list)
+                        else "",
                         "id": conv.id,
                         "title": conv.title,
                         "source": conv.source,
