@@ -432,5 +432,100 @@ class SalvageLogicTests(unittest.TestCase):
             self.assertTrue((out_path / "index.csv").exists())
 
 
+class CallLLMProviderTests(unittest.TestCase):
+    def test_call_llm_unsupported_provider_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            ca.call_llm(
+                provider="unknown_provider",
+                model="some-model",
+                api_key="key",
+                system_prompt="system",
+                user_prompt="user",
+            )
+        self.assertIn("Unsupported provider", str(ctx.exception))
+
+    def test_call_llm_openai_dispatches(self):
+        with patch.object(ca, "call_openai_chat", return_value={"result": "ok"}) as m:
+            result = ca.call_llm(
+                provider="openai",
+                model="gpt-4o",
+                api_key="key",
+                system_prompt="system",
+                user_prompt="user",
+            )
+            m.assert_called_once_with(
+                model="gpt-4o",
+                api_key="key",
+                system_prompt="system",
+                user_prompt="user",
+            )
+            self.assertEqual(result, {"result": "ok"})
+
+    def test_call_llm_anthropic_dispatches(self):
+        with patch.object(ca, "call_claude_chat", return_value={"result": "claude"}) as m:
+            result = ca.call_llm(
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+                api_key="key",
+                system_prompt="system",
+                user_prompt="user",
+            )
+            m.assert_called_once_with(
+                model="claude-sonnet-4-6",
+                api_key="key",
+                system_prompt="system",
+                user_prompt="user",
+            )
+            self.assertEqual(result, {"result": "claude"})
+
+    def test_call_claude_strips_markdown_fences(self):
+        import urllib.request
+
+        mock_body = json.dumps({
+            "content": [{"text": '```json\n{"key": "value"}\n```'}]
+        }).encode("utf-8")
+
+        class FakeResp:
+            def read(self):
+                return mock_body
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        with patch.object(urllib.request, "urlopen", return_value=FakeResp()):
+            result = ca.call_claude_chat(
+                model="claude-haiku-4-5-20251001",
+                api_key="test-key",
+                system_prompt="system",
+                user_prompt="user",
+            )
+        self.assertEqual(result, {"key": "value"})
+
+    def test_call_claude_plain_json(self):
+        import urllib.request
+
+        mock_body = json.dumps({
+            "content": [{"text": '{"answer": 42}'}]
+        }).encode("utf-8")
+
+        class FakeResp:
+            def read(self):
+                return mock_body
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        with patch.object(urllib.request, "urlopen", return_value=FakeResp()):
+            result = ca.call_claude_chat(
+                model="claude-sonnet-4-6",
+                api_key="test-key",
+                system_prompt="system",
+                user_prompt="user",
+            )
+        self.assertEqual(result, {"answer": 42})
+
+
 if __name__ == "__main__":
     unittest.main()

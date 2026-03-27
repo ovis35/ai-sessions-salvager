@@ -253,6 +253,73 @@ def call_openai_chat(
     return json.loads(content)
 
 
+def call_claude_chat(
+    model: str,
+    api_key: str,
+    system_prompt: str,
+    user_prompt: str,
+    timeout: int = 120,
+) -> Dict[str, Any]:
+    url = "https://api.anthropic.com/v1/messages"
+    payload = {
+        "model": model,
+        "max_tokens": 4096,
+        "temperature": 0,
+        "system": system_prompt,
+        "messages": [
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    content = body["content"][0]["text"]
+    # Strip markdown code fences if present
+    stripped = content.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        # Remove opening fence (```json or ```)
+        lines = lines[1:]
+        # Remove closing fence
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    return json.loads(stripped)
+
+
+def call_llm(
+    provider: str,
+    model: str,
+    api_key: str,
+    system_prompt: str,
+    user_prompt: str,
+) -> Dict[str, Any]:
+    if provider == "openai":
+        return call_openai_chat(
+            model=model,
+            api_key=api_key,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+    if provider == "anthropic":
+        return call_claude_chat(
+            model=model,
+            api_key=api_key,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+    raise ValueError(f"Unsupported provider: {provider!r}. Supported: openai, anthropic")
+
+
 def normalize_text_list(value: Any, max_items: int) -> List[str]:
     if not isinstance(value, list):
         return []
@@ -606,10 +673,9 @@ def second_pass_judge(
     provider: str,
     api_key: str,
 ) -> Dict[str, str]:
-    if provider != "openai":
-        raise ValueError("Only provider=openai is implemented in this version")
     system_prompt, user_prompt = build_calibration_prompt(conv, first_pass)
-    calibration = call_openai_chat(
+    calibration = call_llm(
+        provider=provider,
         model=model,
         api_key=api_key,
         system_prompt=system_prompt,
@@ -866,9 +932,8 @@ def analyze_conversation(
     last_error = "unknown"
     for i in range(retries + 1):
         try:
-            if provider != "openai":
-                raise ValueError("Only provider=openai is implemented in this version")
-            first_pass = call_openai_chat(
+            first_pass = call_llm(
+                provider=provider,
                 model=model,
                 api_key=api_key,
                 system_prompt=system_prompt,
@@ -955,9 +1020,9 @@ def main() -> int:
     )
     p.add_argument("--input", required=True)
     p.add_argument("--format", default="auto", choices=["auto", "chatgpt", "claude"])
-    p.add_argument("--provider", default="openai")
+    p.add_argument("--provider", default="openai", choices=["openai", "anthropic"])
     p.add_argument("--model")
-    p.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    p.add_argument("--api-key-env", default=None)
     p.add_argument(
         "--skip-analysis",
         action="store_true",
@@ -977,9 +1042,11 @@ def main() -> int:
 
     api_key = ""
     if not args.skip_analysis:
-        api_key = os.getenv(args.api_key_env, "")
+        _default_env = "ANTHROPIC_API_KEY" if args.provider == "anthropic" else "OPENAI_API_KEY"
+        api_key_env = args.api_key_env if args.api_key_env is not None else _default_env
+        api_key = os.getenv(api_key_env, "")
         if not api_key:
-            print(f"Missing API key env: {args.api_key_env}", file=sys.stderr)
+            print(f"Missing API key env: {api_key_env}", file=sys.stderr)
             return 2
 
     input_path = Path(args.input)
