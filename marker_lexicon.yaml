@@ -1,0 +1,35 @@
+{
+  "common": {
+    "residual_strong_markers": ["kpi", "ltv", "cac", "arr", "pmf"],
+    "verdict_not_worth_markers": ["not worth", "low information"],
+    "verdict_partial_markers": ["partial salvage", "thin residual", "needs rewrite"],
+    "verdict_insufficient_readiness_markers": [
+      "not yet ready for direct use",
+      "not ready for work system",
+      "not ready for direct adoption"
+    ],
+    "verdict_partial_only_markers": ["only partially salvageable", "only suitable for excerpting"],
+    "verdict_concept_or_draft_markers": ["still too conceptual", "draft only"],
+    "verdict_positive_markers": ["usable", "ready", "actionable"],
+    "verdict_negative_markers": ["only partial", "not ready", "not enough"],
+    "verdict_partial_tokens": ["partial", "excerpt"],
+    "verdict_work_system_tokens": ["direct use", "work system", "direct adoption"],
+    "no_action_steps": ["no action", "none", "n/a"]
+  },
+  "zh": {
+    "residual_strong_markers": ["框架", "流程", "映射", "門檻", "判準", "條件", "原則", "規則", "檢核", "指標", "決策", "清單", "模型"],
+    "verdict_not_worth_markers": ["不值得保存", "不值得留", "不必保存", "整體不值得", "資訊密度太低", "資訊密度不高", "普通問答", "流水帳"],
+    "verdict_partial_markers": ["只有局部", "局部可留", "其餘多為普通", "需重寫才值得留", "部分可留", "僅留一點"],
+    "verdict_insufficient_readiness_markers": ["尚不足直接進入工作系統", "未達可直接進入工作系統", "難直接進入工作系統", "尚不足直接採用", "未達可直接採用", "未達可直接落地"],
+    "verdict_partial_only_markers": ["僅局部可摘用", "僅部分可留", "勉強可留", "勉強可摘錄", "只適合摘錄", "只能局部保留"],
+    "verdict_concept_or_draft_markers": ["仍停在概念層", "只是草案", "只是一般整理", "只是初步整理"],
+    "verdict_positive_markers": ["可留", "可用", "可直接", "可落地", "可採用", "值得保留", "可進入", "足以進入"],
+    "verdict_negative_markers": ["不足", "不宜", "有限", "不值得整段保存", "尚不足", "難直接", "僅局部"],
+    "verdict_partial_tokens": ["局部", "部分", "摘錄"],
+    "verdict_work_system_tokens": ["工作系統", "直接採用", "直接落地"],
+    "no_action_steps": ["暫不行動", "不需行動"]
+  },
+  "en": {
+    "residual_strong_markers": ["framework", "mapping", "threshold", "criterion", "criteria", "principle", "checklist", "metric", "rule"]
+  }
+}

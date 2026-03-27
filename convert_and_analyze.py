@@ -18,6 +18,95 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
+MARKER_CONFIG_BASENAME = "marker_lexicon.yaml"
+MARKER_KEYS = [
+    "residual_strong_markers",
+    "verdict_not_worth_markers",
+    "verdict_partial_markers",
+    "verdict_insufficient_readiness_markers",
+    "verdict_partial_only_markers",
+    "verdict_concept_or_draft_markers",
+    "verdict_positive_markers",
+    "verdict_negative_markers",
+    "verdict_partial_tokens",
+    "verdict_work_system_tokens",
+    "no_action_steps",
+]
+
+
+def load_marker_lexicon(config_path: Optional[Path] = None) -> Dict[str, Dict[str, List[str]]]:
+    path = config_path or (Path(__file__).resolve().parent / MARKER_CONFIG_BASENAME)
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        print(f"[warn] failed to load marker config: {path}", file=sys.stderr, flush=True)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    cleaned: Dict[str, Dict[str, List[str]]] = {}
+    for lang, section in raw.items():
+        if not isinstance(lang, str) or not isinstance(section, dict):
+            continue
+        lang_map: Dict[str, List[str]] = {}
+        for key in MARKER_KEYS:
+            value = section.get(key, [])
+            if isinstance(value, list):
+                lang_map[key] = [
+                    item.strip().lower()
+                    for item in value
+                    if isinstance(item, str) and item.strip()
+                ]
+            else:
+                lang_map[key] = []
+        cleaned[lang.strip().lower()] = lang_map
+    return cleaned
+
+
+def detect_marker_language(text: str) -> str:
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return "zh"
+    return "en"
+
+
+def build_marker_set(
+    language: str,
+    marker_lexicon: Optional[Dict[str, Dict[str, List[str]]]] = None,
+) -> Dict[str, List[str]]:
+    lexicon = marker_lexicon if marker_lexicon is not None else load_marker_lexicon()
+    common = lexicon.get("common", {})
+    preferred_sections: List[Dict[str, List[str]]] = []
+    if language == "multi":
+        preferred_sections = [lexicon.get("zh", {}), lexicon.get("en", {})]
+    else:
+        preferred_sections = [lexicon.get(language, {})]
+    merged: Dict[str, List[str]] = {}
+    for key in MARKER_KEYS:
+        combined = []
+        seen = set()
+        for section in [common, *preferred_sections]:
+            for item in section.get(key, []):
+                if item not in seen:
+                    combined.append(item)
+                    seen.add(item)
+        merged[key] = combined
+    return merged
+
+
+def resolve_analysis_language(language: str, conv: Optional["NormalizedConversation"] = None) -> str:
+    if language in {"zh", "en"}:
+        return language
+    return "multi"
+
+
+def marker_values(
+    marker_set: Optional[Dict[str, List[str]]], key: str, default: List[str]
+) -> List[str]:
+    values = (marker_set or {}).get(key, [])
+    return values if values else default
+
+
 def _progress(idx: int, total: int, label: str, title: str) -> None:
     width = len(str(total))
     short_title = title[:60] + "…" if len(title) > 60 else title
@@ -342,47 +431,59 @@ def normalize_text_list(value: Any, max_items: int) -> List[str]:
     return cleaned[:max_items]
 
 
-def is_no_action_step(step: str) -> bool:
+def is_no_action_step(step: str, marker_set: Optional[Dict[str, List[str]]] = None) -> bool:
     text = step.strip().lower()
-    if text in {"暫不行動", "no action", "none", "n/a"}:
+    markers = marker_values(
+        marker_set, "no_action_steps", ["暫不行動", "不需行動", "no action", "none", "n/a"]
+    )
+    if text in markers:
         return True
-    return "暫不行動" in text or "不需行動" in text
+    return any(marker in text for marker in markers)
 
 
-def has_actionable_next_steps(next_steps: List[str]) -> bool:
+def has_actionable_next_steps(
+    next_steps: List[str], marker_set: Optional[Dict[str, List[str]]] = None
+) -> bool:
     if not next_steps:
         return False
-    return any(not is_no_action_step(step) for step in next_steps)
+    return any(not is_no_action_step(step, marker_set=marker_set) for step in next_steps)
 
 
-def residual_asset_strength(residual: str) -> int:
+def residual_asset_strength(
+    residual: str, marker_set: Optional[Dict[str, List[str]]] = None
+) -> int:
     text = residual.strip().lower()
     if not text:
         return 0
-    strong_markers = [
-        "框架",
-        "流程",
-        "映射",
-        "門檻",
-        "判準",
-        "條件",
-        "原則",
-        "規則",
-        "檢核",
-        "指標",
-        "kpi",
-        "決策",
-        "清單",
-        "模型",
-        "framework",
-        "mapping",
-        "threshold",
-        "criteria",
-        "principle",
-        "checklist",
-        "metric",
-        "rule",
-    ]
+    strong_markers = marker_values(
+        marker_set,
+        "residual_strong_markers",
+        [
+            "框架",
+            "流程",
+            "映射",
+            "門檻",
+            "判準",
+            "條件",
+            "原則",
+            "規則",
+            "檢核",
+            "指標",
+            "kpi",
+            "決策",
+            "清單",
+            "模型",
+            "framework",
+            "mapping",
+            "threshold",
+            "criteria",
+            "criterion",
+            "principle",
+            "checklist",
+            "metric",
+            "rule",
+        ],
+    )
     score = sum(1 for marker in strong_markers if marker in text)
     if re.search(r"(?:ltv|cac|arr|pmf|\d)", text):
         score += 1
@@ -391,12 +492,16 @@ def residual_asset_strength(residual: str) -> int:
     return score
 
 
-def residual_is_work_system_worthy(residual: str) -> bool:
-    return residual_asset_strength(residual) >= 2
+def residual_is_work_system_worthy(
+    residual: str, marker_set: Optional[Dict[str, List[str]]] = None
+) -> bool:
+    return residual_asset_strength(residual, marker_set=marker_set) >= 2
 
 
-def build_work_system_signals(residuals: List[str]) -> Dict[str, Any]:
-    strengths = [residual_asset_strength(item) for item in residuals]
+def build_work_system_signals(
+    residuals: List[str], marker_set: Optional[Dict[str, List[str]]] = None
+) -> Dict[str, Any]:
+    strengths = [residual_asset_strength(item, marker_set=marker_set) for item in residuals]
     work_system_count = sum(1 for score in strengths if score >= 2)
     strong_asset_count = sum(1 for score in strengths if score >= 3)
     return {
@@ -432,80 +537,97 @@ def can_keep_a(signals: Dict[str, Any]) -> bool:
     )
 
 
-def detect_verdict_semantics(verdict: str) -> Dict[str, bool]:
+def detect_verdict_semantics(
+    verdict: str, marker_set: Optional[Dict[str, List[str]]] = None
+) -> Dict[str, bool]:
     text = verdict.strip().lower()
-    not_worth_markers = [
-        "不值得保存",
-        "不值得留",
-        "不必保存",
-        "整體不值得",
-        "資訊密度太低",
-        "資訊密度不高",
-        "普通問答",
-        "流水帳",
-        "not worth",
-        "low information",
-    ]
-    partial_markers = [
-        "只有局部",
-        "局部可留",
-        "其餘多為普通",
-        "需重寫才值得留",
-        "部分可留",
-        "僅留一點",
-        "partial salvage",
-        "thin residual",
-        "needs rewrite",
-    ]
+    not_worth_markers = marker_values(
+        marker_set,
+        "verdict_not_worth_markers",
+        [
+            "不值得保存",
+            "不值得留",
+            "不必保存",
+            "整體不值得",
+            "資訊密度太低",
+            "資訊密度不高",
+            "普通問答",
+            "流水帳",
+            "not worth",
+            "low information",
+        ],
+    )
+    partial_markers = marker_values(
+        marker_set,
+        "verdict_partial_markers",
+        [
+            "只有局部",
+            "局部可留",
+            "其餘多為普通",
+            "需重寫才值得留",
+            "部分可留",
+            "僅留一點",
+            "partial salvage",
+            "thin residual",
+            "needs rewrite",
+        ],
+    )
     explicit_not_worth = any(marker in text for marker in not_worth_markers)
     partial_salvage = any(marker in text for marker in partial_markers)
-    insufficient_readiness_markers = [
-        "尚不足直接進入工作系統",
-        "未達可直接進入工作系統",
-        "難直接進入工作系統",
-        "尚不足直接採用",
-        "未達可直接採用",
-        "未達可直接落地",
-        "not yet ready for direct use",
-        "not ready for work system",
-        "not ready for direct adoption",
-    ]
-    partial_only_markers = [
-        "僅局部可摘用",
-        "僅部分可留",
-        "勉強可留",
-        "勉強可摘錄",
-        "只適合摘錄",
-        "只能局部保留",
-        "only partially salvageable",
-        "only suitable for excerpting",
-    ]
-    concept_or_draft_markers = [
-        "仍停在概念層",
-        "只是草案",
-        "只是一般整理",
-        "只是初步整理",
-        "still too conceptual",
-        "draft only",
-    ]
+    insufficient_readiness_markers = marker_values(
+        marker_set,
+        "verdict_insufficient_readiness_markers",
+        [
+            "尚不足直接進入工作系統",
+            "未達可直接進入工作系統",
+            "難直接進入工作系統",
+            "尚不足直接採用",
+            "未達可直接採用",
+            "未達可直接落地",
+            "not yet ready for direct use",
+            "not ready for work system",
+            "not ready for direct adoption",
+        ],
+    )
+    partial_only_markers = marker_values(
+        marker_set,
+        "verdict_partial_only_markers",
+        [
+            "僅局部可摘用",
+            "僅部分可留",
+            "勉強可留",
+            "勉強可摘錄",
+            "只適合摘錄",
+            "只能局部保留",
+            "only partially salvageable",
+            "only suitable for excerpting",
+        ],
+    )
+    concept_or_draft_markers = marker_values(
+        marker_set,
+        "verdict_concept_or_draft_markers",
+        [
+            "仍停在概念層",
+            "只是草案",
+            "只是一般整理",
+            "只是初步整理",
+            "still too conceptual",
+            "draft only",
+        ],
+    )
     has_insufficient_readiness = any(marker in text for marker in insufficient_readiness_markers)
     has_partial_only = any(marker in text for marker in partial_only_markers)
     has_concept_or_draft = any(marker in text for marker in concept_or_draft_markers)
-    indicates_partial = (
-        "局部" in text
-        or "部分" in text
-        or "partial" in text
-        or "摘錄" in text
-        or "excerpt" in text
+    partial_tokens = marker_values(
+        marker_set, "verdict_partial_tokens", ["局部", "部分", "partial", "摘錄", "excerpt"]
     )
-    mentions_work_system_gate = (
-        "工作系統" in text
-        or "直接採用" in text
-        or "直接落地" in text
-        or "direct use" in text
-        or "work system" in text
-        or "direct adoption" in text
+    work_system_tokens = marker_values(
+        marker_set,
+        "verdict_work_system_tokens",
+        ["工作系統", "直接採用", "直接落地", "direct use", "work system", "direct adoption"],
     )
+    indicates_partial = any(token in text for token in partial_tokens)
+    mentions_work_system_gate = any(token in text for token in work_system_tokens)
     has_b_blocker_semantics = (
         has_insufficient_readiness
         or has_partial_only
@@ -522,49 +644,38 @@ def _has_any_marker(text: str, markers: List[str]) -> bool:
     return any(marker in text for marker in markers)
 
 
-def verdict_has_mixed_signals(verdict: str) -> bool:
+def verdict_has_mixed_signals(
+    verdict: str, marker_set: Optional[Dict[str, List[str]]] = None
+) -> bool:
     text = verdict.strip().lower()
     if not text:
         return False
-    positive_markers = [
-        "可留",
-        "可用",
-        "可直接",
-        "可落地",
-        "可採用",
-        "值得保留",
-        "可進入",
-        "足以進入",
-        "usable",
-        "ready",
-        "actionable",
-    ]
-    negative_markers = [
-        "不足",
-        "不宜",
-        "有限",
-        "不值得整段保存",
-        "尚不足",
-        "難直接",
-        "僅局部",
-        "only partial",
-        "not ready",
-        "not enough",
-    ]
+    positive_markers = marker_values(
+        marker_set,
+        "verdict_positive_markers",
+        ["可留", "可用", "可直接", "可落地", "可採用", "值得保留", "可進入", "足以進入", "usable", "ready", "actionable"],
+    )
+    negative_markers = marker_values(
+        marker_set,
+        "verdict_negative_markers",
+        ["不足", "不宜", "有限", "不值得整段保存", "尚不足", "難直接", "僅局部", "only partial", "not ready", "not enough"],
+    )
     return _has_any_marker(text, positive_markers) and _has_any_marker(
         text, negative_markers
     )
 
 
-def build_salvage_signals(obj: Dict[str, Any]) -> Dict[str, Any]:
+def build_salvage_signals(
+    obj: Dict[str, Any], marker_set: Optional[Dict[str, List[str]]] = None
+) -> Dict[str, Any]:
     residuals = normalize_text_list(obj.get("valuable_residuals"), max_items=3)
     next_steps = normalize_text_list(obj.get("next_steps"), max_items=2)
     verdict = str(obj.get("verdict", "")).strip()
-    semantics = detect_verdict_semantics(verdict)
+    semantics = detect_verdict_semantics(verdict, marker_set=marker_set)
     residual_count = len(residuals)
-    actionable = has_actionable_next_steps(next_steps)
+    actionable = has_actionable_next_steps(next_steps, marker_set=marker_set)
     thin_residual = residual_count <= 1
-    work_system_signals = build_work_system_signals(residuals)
+    work_system_signals = build_work_system_signals(residuals, marker_set=marker_set)
     return {
         "residuals": residuals,
         "next_steps": next_steps,
@@ -577,12 +688,14 @@ def build_salvage_signals(obj: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def needs_second_pass(result: Dict[str, Any]) -> bool:
+def needs_second_pass(
+    result: Dict[str, Any], marker_set: Optional[Dict[str, List[str]]] = None
+) -> bool:
     route = str(result.get("route_recommendation", "")).strip().upper()
     if route not in {"B", "C"}:
         return False
-    signals = build_salvage_signals(result)
-    mixed_verdict = verdict_has_mixed_signals(signals["verdict"])
+    signals = build_salvage_signals(result, marker_set=marker_set)
+    mixed_verdict = verdict_has_mixed_signals(signals["verdict"], marker_set=marker_set)
     low_residual_but_actionable = (
         signals["residual_count"] <= 1 and signals["has_actionable_steps"]
     )
@@ -604,7 +717,9 @@ def needs_second_pass(result: Dict[str, Any]) -> bool:
     )
 
 
-def normalize_salvage_analysis(obj: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_salvage_analysis(
+    obj: Dict[str, Any], marker_set: Optional[Dict[str, List[str]]] = None
+) -> Dict[str, Any]:
     normalized = dict(obj)
     normalized["topic"] = str(normalized.get("topic", "")).strip()
     normalized["drift_point"] = str(normalized.get("drift_point", "")).strip()
@@ -615,7 +730,7 @@ def normalize_salvage_analysis(obj: Dict[str, Any]) -> Dict[str, Any]:
     normalized["next_steps"] = normalize_text_list(normalized.get("next_steps"), max_items=2)
 
     route = str(normalized.get("route_recommendation", "")).strip().upper()
-    signals = build_salvage_signals(normalized)
+    signals = build_salvage_signals(normalized, marker_set=marker_set)
 
     if signals["explicit_not_worth"] or (
         signals["residual_count"] == 0 and not signals["has_actionable_steps"]
@@ -681,6 +796,7 @@ def second_pass_judge(
     model: str,
     provider: str,
     api_key: str,
+    marker_set: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, str]:
     system_prompt, user_prompt = build_calibration_prompt(conv, first_pass)
     calibration = call_llm(
@@ -699,7 +815,7 @@ def second_pass_judge(
     reason = str(calibration.get("reason", "")).strip()
     if not reason:
         raise ValueError("invalid_second_pass_reason")
-    signals = build_salvage_signals(first_pass)
+    signals = build_salvage_signals(first_pass, marker_set=marker_set)
     initial_route = str(first_pass.get("route_recommendation", "")).strip().upper()
 
     can_strongly_upgrade_c_to_b = (
@@ -756,7 +872,11 @@ def finalize_salvage_result(
     return finalized
 
 
-def validate_analysis(obj: Dict[str, Any], analysis_schema: str) -> Tuple[bool, str]:
+def validate_analysis(
+    obj: Dict[str, Any],
+    analysis_schema: str,
+    marker_set: Optional[Dict[str, List[str]]] = None,
+) -> Tuple[bool, str]:
     if analysis_schema == "salvage":
         required = [
             "topic",
@@ -805,7 +925,7 @@ def validate_analysis(obj: Dict[str, Any], analysis_schema: str) -> Tuple[bool, 
         if not isinstance(obj["verdict"], str) or not obj["verdict"].strip():
             return False, "invalid_verdict"
 
-        signals = build_salvage_signals(obj)
+        signals = build_salvage_signals(obj, marker_set=marker_set)
         route = obj["route_recommendation"]
 
         if signals["residual_count"] == 0 and not signals["has_actionable_steps"] and route != "D":
@@ -936,8 +1056,12 @@ def analyze_conversation(
     api_key: str,
     retries: int,
     analysis_schema: str,
+    language: str = "auto",
+    marker_lexicon: Optional[Dict[str, Dict[str, List[str]]]] = None,
 ) -> Dict[str, Any]:
     system_prompt, user_prompt = build_analysis_prompts(conv, analysis_schema)
+    effective_language = resolve_analysis_language(language, conv=conv)
+    marker_set = build_marker_set(effective_language, marker_lexicon=marker_lexicon)
     last_error = "unknown"
     for i in range(retries + 1):
         try:
@@ -949,14 +1073,16 @@ def analyze_conversation(
                 user_prompt=user_prompt,
             )
             if analysis_schema == "salvage":
-                first_pass = normalize_salvage_analysis(first_pass)
-            ok, reason = validate_analysis(first_pass, analysis_schema=analysis_schema)
+                first_pass = normalize_salvage_analysis(first_pass, marker_set=marker_set)
+            ok, reason = validate_analysis(
+                first_pass, analysis_schema=analysis_schema, marker_set=marker_set
+            )
             if ok:
                 if analysis_schema != "salvage":
                     return {"schema": analysis_schema, "status": "ok", **first_pass}
 
                 finalized = finalize_salvage_result(first_pass)
-                if needs_second_pass(first_pass):
+                if needs_second_pass(first_pass, marker_set=marker_set):
                     try:
                         calibration = second_pass_judge(
                             conv=conv,
@@ -964,6 +1090,7 @@ def analyze_conversation(
                             model=model,
                             provider=provider,
                             api_key=api_key,
+                            marker_set=marker_set,
                         )
                         finalized = finalize_salvage_result(
                             first_pass, calibration=calibration
@@ -1091,6 +1218,11 @@ def main() -> int:
     p.add_argument("--resume", action="store_true")
     p.add_argument("--force", action="store_true")
     p.add_argument("--sample", type=int)
+    p.add_argument("--language", default="auto", choices=["auto", "zh", "en"])
+    p.add_argument(
+        "--marker-config",
+        default=str(Path(__file__).resolve().parent / MARKER_CONFIG_BASENAME),
+    )
     args = p.parse_args()
 
     if not args.skip_analysis and not args.model:
@@ -1109,6 +1241,7 @@ def main() -> int:
     out_root = Path(args.output_root)
     out_root.mkdir(parents=True, exist_ok=True)
 
+    marker_lexicon = load_marker_lexicon(Path(args.marker_config))
     data = json.loads(input_path.read_text(encoding="utf-8"))
     try:
         conversations = normalize(data, args.format)
@@ -1212,6 +1345,8 @@ def main() -> int:
                     api_key,
                     args.retry,
                     args.analysis_schema,
+                    args.language,
+                    marker_lexicon,
                 ): (conv, an_path, md_name, an_name)
                 for conv, an_path, md_name, an_name in jobs
             }
