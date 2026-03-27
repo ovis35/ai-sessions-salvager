@@ -58,6 +58,7 @@ INDEX_FIELDS = [
 MODEL_PRICING_USD_PER_1M: Dict[str, Dict[str, Tuple[float, float]]] = {
     "openai": {
         "gpt-4.1-mini": (0.40, 1.60),
+        "gpt-5.2": (1.25, 10.00),
     },
     "anthropic": {
         "claude-sonnet-4-6": (3.00, 15.00),
@@ -233,6 +234,12 @@ def estimate_cost_range(
         in_price, out_price = model_price
     per_call = ((input_tokens * in_price) + (output_tokens * out_price)) / 1_000_000
     return min_calls * per_call, max_calls * per_call
+
+
+def resolve_api_key_env(provider: str, explicit_env: Optional[str]) -> str:
+    if explicit_env is not None:
+        return explicit_env
+    return "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
 
 
 @dataclass
@@ -1180,6 +1187,9 @@ def analyze_conversation(
     analysis_schema: str,
     language: str = "auto",
     marker_lexicon: Optional[Dict[str, Dict[str, List[str]]]] = None,
+    second_pass_model: Optional[str] = None,
+    second_pass_provider: Optional[str] = None,
+    second_pass_api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     system_prompt, user_prompt = build_analysis_prompts(conv, analysis_schema)
     effective_language = resolve_analysis_language(language, conv=conv)
@@ -1209,9 +1219,9 @@ def analyze_conversation(
                         calibration = second_pass_judge(
                             conv=conv,
                             first_pass=first_pass,
-                            model=model,
-                            provider=provider,
-                            api_key=api_key,
+                            model=second_pass_model or model,
+                            provider=second_pass_provider or provider,
+                            api_key=second_pass_api_key or api_key,
                             marker_set=marker_set,
                         )
                         finalized = finalize_salvage_result(
@@ -1289,6 +1299,9 @@ def main() -> int:
     p.add_argument("--provider", default="openai", choices=["openai", "anthropic"])
     p.add_argument("--model")
     p.add_argument("--api-key-env", default=None)
+    p.add_argument("--second-pass-provider", default=None, choices=["openai", "anthropic"])
+    p.add_argument("--second-pass-model")
+    p.add_argument("--second-pass-api-key-env", default=None)
     p.add_argument(
         "--skip-analysis",
         action="store_true",
@@ -1324,15 +1337,42 @@ def main() -> int:
 
     if not args.skip_analysis and not args.dry_run and not args.model:
         p.error("--model is required unless --skip-analysis is used")
+    if (
+        args.analysis_schema == "salvage"
+        and args.second_pass_provider
+        and not args.second_pass_model
+    ):
+        p.error("--second-pass-model is required when --second-pass-provider is set")
+
+    second_pass_provider: Optional[str] = None
+    second_pass_model: Optional[str] = None
+    second_pass_api_key: Optional[str] = None
+    if args.analysis_schema == "salvage" and args.second_pass_provider:
+        second_pass_provider = args.second_pass_provider
+        second_pass_model = args.second_pass_model
 
     api_key = ""
     if not args.skip_analysis and not args.dry_run:
-        _default_env = "ANTHROPIC_API_KEY" if args.provider == "anthropic" else "OPENAI_API_KEY"
-        api_key_env = args.api_key_env if args.api_key_env is not None else _default_env
+        api_key_env = resolve_api_key_env(args.provider, args.api_key_env)
         api_key = os.getenv(api_key_env, "")
         if not api_key:
             logger.error("Missing API key env: %s", api_key_env)
             return 2
+
+        if second_pass_provider:
+            second_pass_api_key_env = resolve_api_key_env(
+                second_pass_provider, args.second_pass_api_key_env
+            )
+            second_pass_api_key = os.getenv(second_pass_api_key_env, "")
+            if not second_pass_api_key:
+                logger.error("Missing API key env: %s", second_pass_api_key_env)
+                return 2
+            logger.info("First-pass provider: %s / %s", args.provider, args.model)
+            logger.info(
+                "Second-pass provider: %s / %s",
+                second_pass_provider,
+                second_pass_model,
+            )
 
     input_path = Path(args.input)
     out_root = Path(args.output_root)
@@ -1446,8 +1486,8 @@ def main() -> int:
         cost_range = estimate_cost_range(
             provider=args.provider,
             model=args.model or "",
-            min_calls=min_calls,
-            max_calls=max_calls,
+            min_calls=len(jobs),
+            max_calls=len(jobs),
             input_tokens=args.estimate_input_tokens,
             output_tokens=args.estimate_output_tokens,
             price_input_per_1m=args.price_input_per_1m,
@@ -1461,7 +1501,40 @@ def main() -> int:
                 args.model,
             )
         else:
-            logger.info("Estimated cost (USD): min=%.4f max=%.4f", cost_range[0], cost_range[1])
+            logger.info(
+                "Estimated first-pass cost (USD): min=%.4f max=%.4f",
+                cost_range[0],
+                cost_range[1],
+            )
+        if args.analysis_schema == "salvage":
+            second_pass_calls = int(
+                round(len(jobs) * max(0.0, min(args.estimate_second_pass_ratio, 1.0)))
+            )
+            second_provider = second_pass_provider or args.provider
+            second_model = second_pass_model or args.model or ""
+            second_pass_cost_range = estimate_cost_range(
+                provider=second_provider,
+                model=second_model,
+                min_calls=second_pass_calls,
+                max_calls=second_pass_calls,
+                input_tokens=args.estimate_input_tokens,
+                output_tokens=args.estimate_output_tokens,
+                price_input_per_1m=args.price_input_per_1m,
+                price_output_per_1m=args.price_output_per_1m,
+            )
+            if second_pass_cost_range is None:
+                logger.warning(
+                    "Second-pass cost estimate unavailable: missing pricing for provider=%s model=%s. "
+                    "Set --price-input-per-1m and --price-output-per-1m to override.",
+                    second_provider,
+                    second_model,
+                )
+            else:
+                logger.info(
+                    "Estimated second-pass cost (USD): min=%.4f max=%.4f",
+                    second_pass_cost_range[0],
+                    second_pass_cost_range[1],
+                )
         return 0
 
     if not args.skip_analysis:
@@ -1469,14 +1542,17 @@ def main() -> int:
             fut_map = {
                 ex.submit(
                     analyze_conversation,
-                    conv,
-                    args.model,
-                    args.provider,
-                    api_key,
-                    args.retry,
-                    args.analysis_schema,
-                    args.language,
-                    marker_lexicon,
+                    conv=conv,
+                    model=args.model,
+                    provider=args.provider,
+                    api_key=api_key,
+                    retries=args.retry,
+                    analysis_schema=args.analysis_schema,
+                    language=args.language,
+                    marker_lexicon=marker_lexicon,
+                    second_pass_model=second_pass_model,
+                    second_pass_provider=second_pass_provider,
+                    second_pass_api_key=second_pass_api_key,
                 ): (conv, an_path, md_name, an_name)
                 for conv, an_path, md_name, an_name in jobs
             }
