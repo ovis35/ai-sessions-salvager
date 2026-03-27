@@ -15,6 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def _progress(idx: int, total: int, label: str, title: str) -> None:
+    width = len(str(total))
+    short_title = title[:60] + "…" if len(title) > 60 else title
+    print(f"[{idx:{width}d}/{total}] {label:<10} {short_title}", flush=True)
+
+
 @dataclass
 class NormalizedMessage:
     role: str
@@ -1062,9 +1068,11 @@ def main() -> int:
         conversations = conversations[: args.sample]
 
     index_path = out_root / "index.csv"
+    total = len(conversations)
+    print(f"Loaded {total} conversations → {out_root}", flush=True)
 
     jobs = []
-    for conv in conversations:
+    for n, conv in enumerate(conversations, start=1):
         sid = safe_id(conv.id)
         md_name = f"conv_{sid}.md"
         an_name = f"conv_{sid}.analysis.json"
@@ -1074,6 +1082,7 @@ def main() -> int:
         md_path.write_text(render_markdown(conv), encoding="utf-8")
 
         if args.skip_analysis:
+            _progress(n, total, "converted", conv.title)
             write_index_row(
                 index_path,
                 {
@@ -1100,6 +1109,7 @@ def main() -> int:
             continue
 
         if args.resume and an_path.exists() and not args.force:
+            _progress(n, total, "skipped", conv.title)
             write_index_row(
                 index_path,
                 {
@@ -1142,9 +1152,18 @@ def main() -> int:
                 for conv, an_path, md_name, an_name in jobs
             }
 
+            n_done = total - len(jobs)
             for fut in as_completed(fut_map):
+                n_done += 1
                 conv, an_path, md_name, an_name = fut_map[fut]
                 result = fut.result()
+                status = result.get("status", "unknown")
+                if status == "ok":
+                    route = result.get("route_recommendation", "")
+                    label = f"ok route={route}" if route else "ok"
+                else:
+                    label = f"{status}"
+                _progress(n_done, total, label, conv.title)
                 an_path.write_text(
                     json.dumps(result, ensure_ascii=False, indent=2),
                     encoding="utf-8",
