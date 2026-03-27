@@ -1,6 +1,6 @@
 # ai-sessions-salvager
 
-Batch-convert official ChatGPT/Claude export JSON into one markdown file per conversation, then optionally run LLM analysis and save outputs in the repository root.
+將 ChatGPT / Claude 匯出 JSON 批次轉成每段對話一個 Markdown，並可選擇執行 LLM 分析（預設摘要或嚴格 salvage 模式）。另外也提供等級 A 對話蒐集工具，方便後續歸檔。
 
 ## Features
 - Parse `chatgpt` / `claude` export JSON (`--format auto` supported)
@@ -10,6 +10,7 @@ Batch-convert official ChatGPT/Claude export JSON into one markdown file per con
 - Write one `conv_<safe_id>.analysis.json` per conversation
 - Maintain `index.csv`
 - Supports retries + resume/force
+- Collect only route `A` results and merge analysis + conversation into standalone Markdown (`collect_grade_a.py`)
 
 ## Requirements
 - Python 3.10+
@@ -78,6 +79,16 @@ python convert_and_analyze.py \
   --resume
 ```
 
+### 只蒐集 route `A` 結果並合併輸出
+
+```bash
+python collect_grade_a.py \
+  --input-root ./output \
+  --output-dir ./grade_a
+```
+
+此工具會掃描 `--input-root` 下的 `*.analysis.json`，只保留 `route_recommendation == "A"` 的對話，並把分析摘要 + 原始對話 `.md` 合併後輸出到 `--output-dir`。
+
 ## Salvage mode outputs JSON fields
 - `topic`
 - `valuable_residuals`
@@ -128,12 +139,20 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
   - quick locator for maintainers: `write_index_row()` defines index fields as `id,title,source,md_file,analysis_file,route_recommendation,initial_route_recommendation,final_route_recommendation,calibration_applied,calibration_confidence,verdict,valuable_residual_count,next_steps_count,primary_text,summary,tags,status,error`.
   - for clean single-run results, remove/reset old `index.csv` first or use a fresh `--output-root`.
 
+若使用 `collect_grade_a.py`，會在 `--output-dir` 額外產生：
+
+- `conv_<safe_id>.md`（合併檔）
+  - 前段：分析摘要（route、topic、verdict、drift point、residuals、next steps、校準資訊）
+  - 後段：原始對話內容
+
 ## Notes
 - Current implementation supports `provider=openai`.
 - `--model` is required unless `--skip-analysis` is used.
 - `--analysis-schema` supports `default|salvage` (default: `default`).
 - If `--resume` is enabled and analysis file exists, that conversation is skipped unless `--force` is provided.
+- `--sample N` 可只處理前 N 筆對話（方便抽樣測試流程）。
 - For a clean one-off run, clear/delete old `index.csv` first, or write to a separate `--output-root`.
+- `collect_grade_a.py` 需要同時存在 `conv_<id>.analysis.json` 與對應 `conv_<id>.md`；若缺少 `.md` 會略過該筆並輸出警告。
 
 ## Privacy/Safety
 - 轉換出的 `conv_<safe_id>.md`、`conv_<safe_id>.analysis.json` 與 `index.csv` 可能包含敏感資訊（例如個資、內部討論、API 片段）。
