@@ -452,6 +452,71 @@ class SalvageLogicTests(unittest.TestCase):
             self.assertIn("converted=1", cp.stdout)
             self.assertIn("analysis_ok=0", cp.stdout)
 
+    def test_index_deduplicates_on_rerun(self):
+        data = [
+            {
+                "id": "same-id",
+                "title": "title",
+                "messages": [{"role": "user", "content": "hi", "timestamp": "2024-01-01"}],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            input_path = Path(td) / "input.json"
+            out_path = Path(td) / "out"
+            input_path.write_text(json.dumps(data), encoding="utf-8")
+
+            base_cmd = [
+                "python",
+                "convert_and_analyze.py",
+                "--input",
+                str(input_path),
+                "--format",
+                "chatgpt",
+                "--output-root",
+                str(out_path),
+                "--skip-analysis",
+            ]
+            cp1 = subprocess.run(base_cmd, capture_output=True, text=True, check=False)
+            cp2 = subprocess.run(base_cmd, capture_output=True, text=True, check=False)
+            self.assertEqual(cp1.returncode, 0, cp1.stderr)
+            self.assertEqual(cp2.returncode, 0, cp2.stderr)
+
+            lines = (out_path / "index.csv").read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines), 2)
+
+    def test_dry_run_reports_estimates(self):
+        data = [
+            {
+                "id": "c1",
+                "title": "t1",
+                "messages": [{"role": "user", "content": "hi", "timestamp": "2024-01-01"}],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            input_path = Path(td) / "input.json"
+            out_path = Path(td) / "out"
+            input_path.write_text(json.dumps(data), encoding="utf-8")
+            cmd = [
+                "python",
+                "convert_and_analyze.py",
+                "--input",
+                str(input_path),
+                "--format",
+                "chatgpt",
+                "--output-root",
+                str(out_path),
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-4.1-mini",
+                "--dry-run",
+            ]
+            cp = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            self.assertEqual(cp.returncode, 0, cp.stderr)
+            self.assertIn("Dry run only", cp.stdout)
+            self.assertIn("Estimated API calls", cp.stdout)
+            self.assertFalse((out_path / "index.csv").exists())
+
 
 class CallLLMProviderTests(unittest.TestCase):
     def test_call_llm_unsupported_provider_raises(self):
