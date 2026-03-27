@@ -7,6 +7,7 @@
 - Write one `conv_<safe_id>.md` per conversation
 - Convert-only mode (`--skip-analysis`) with no API calls required
 - Batch call LLM API for either default summary schema or strict residue-salvage schema
+- Supports **OpenAI** and **Anthropic (Claude)** as analysis providers
 - Write one `conv_<safe_id>.analysis.json` per conversation
 - Maintain `index.csv`
 - Supports retries + resume/force
@@ -14,7 +15,9 @@
 
 ## Requirements
 - Python 3.10+
-- OpenAI-compatible API key in env var (default `OPENAI_API_KEY`) only when analysis is enabled
+- API key in env var — only required when analysis is enabled:
+  - `OPENAI_API_KEY` for `--provider openai` (default)
+  - `ANTHROPIC_API_KEY` for `--provider anthropic`
 
 ## Development
 
@@ -54,6 +57,7 @@ python convert_and_analyze.py \
 
 ### Default analysis schema (summary/tags/language/quality_score)
 
+OpenAI:
 ```bash
 python convert_and_analyze.py \
   --input export.json \
@@ -66,14 +70,40 @@ python convert_and_analyze.py \
   --resume
 ```
 
+Anthropic Claude:
+```bash
+python convert_and_analyze.py \
+  --input export.json \
+  --format auto \
+  --provider anthropic \
+  --model claude-sonnet-4-6 \
+  --output-root ./output \
+  --max-concurrency 5 \
+  --retry 3 \
+  --resume
+```
+
 ### Salvage analysis schema
 
+OpenAI:
 ```bash
 python convert_and_analyze.py \
   --input export.json \
   --format auto \
   --provider openai \
   --model gpt-4.1-mini \
+  --analysis-schema salvage \
+  --output-root ./output \
+  --resume
+```
+
+Anthropic Claude:
+```bash
+python convert_and_analyze.py \
+  --input export.json \
+  --format auto \
+  --provider anthropic \
+  --model claude-sonnet-4-6 \
   --analysis-schema salvage \
   --output-root ./output \
   --resume
@@ -146,7 +176,7 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
   - 後段：原始對話內容
 
 ## Notes
-- Current implementation supports `provider=openai`.
+- `--provider` 支援 `openai`（預設）和 `anthropic`；`--api-key-env` 預設會依 provider 自動選擇對應的環境變數名稱。
 - `--model` is required unless `--skip-analysis` is used.
 - `--analysis-schema` supports `default|salvage` (default: `default`).
 - If `--resume` is enabled and analysis file exists, that conversation is skipped unless `--force` is provided.
