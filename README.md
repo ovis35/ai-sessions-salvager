@@ -10,7 +10,10 @@
 - Supports **OpenAI** and **Anthropic (Claude)** as analysis providers
 - Write one `conv_<safe_id>.analysis.json` per conversation
 - Maintain `index.csv`
+- `index.csv` is now upserted by conversation `id` (reruns update rows instead of appending duplicates)
 - Supports retries + resume/force
+- Dry-run mode: estimate planned API calls + cost (`--dry-run`)
+- Structured logging with configurable level (`--log-level`)
 - Collect only route `A` results and merge analysis + conversation into standalone Markdown (`collect_grade_a.py`)
 
 ## Requirements
@@ -69,6 +72,25 @@ python convert_and_analyze.py \
   --retry 3 \
   --resume
 ```
+
+### Dry-run (估算 API 呼叫與費用，不落地檔案)
+
+```bash
+python convert_and_analyze.py \
+  --input export.json \
+  --format auto \
+  --provider openai \
+  --model gpt-4.1-mini \
+  --analysis-schema salvage \
+  --dry-run
+```
+
+可選參數：
+
+- `--estimate-input-tokens` (default: 2500)
+- `--estimate-output-tokens` (default: 500)
+- `--estimate-second-pass-ratio` (default: 0.25; 只影響 salvage)
+- `--price-input-per-1m` / `--price-output-per-1m`（覆寫內建定價表）
 
 Anthropic Claude:
 ```bash
@@ -165,9 +187,8 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 - `conv_<safe_id>.analysis.json` (when analysis is enabled)
 - `index.csv`
   - includes `route_recommendation`, `initial_route_recommendation`, `final_route_recommendation`, `calibration_applied`, `calibration_confidence`, `verdict`, `valuable_residual_count`, `next_steps_count` for easier distribution review
-  - append behavior: `convert_and_analyze.py` `write_index_row()` opens `index.csv` with append mode (`"a"`), so repeated runs add rows instead of auto-overwriting or deduplicating.
-  - quick locator for maintainers: `write_index_row()` defines index fields as `id,title,source,md_file,analysis_file,route_recommendation,initial_route_recommendation,final_route_recommendation,calibration_applied,calibration_confidence,verdict,valuable_residual_count,next_steps_count,primary_text,summary,tags,status,error`.
-  - for clean single-run results, remove/reset old `index.csv` first or use a fresh `--output-root`.
+  - upsert behavior: reruns會以 `id` 覆蓋同筆 row，不再產生重複行。
+  - quick locator for maintainers: index fields are `id,title,source,md_file,analysis_file,route_recommendation,initial_route_recommendation,final_route_recommendation,calibration_applied,calibration_confidence,verdict,valuable_residual_count,next_steps_count,primary_text,summary,tags,status,error`.
 
 若使用 `collect_grade_a.py`，會在 `--output-dir` 額外產生：
 
@@ -183,7 +204,7 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 - `--marker-config` 可指定 marker 詞彙 YAML（預設 `./marker_lexicon.yaml`），可外部化調整不同語系詞彙表。
 - If `--resume` is enabled and analysis file exists, that conversation is skipped unless `--force` is provided.
 - `--sample N` 可只處理前 N 筆對話（方便抽樣測試流程）。
-- For a clean one-off run, clear/delete old `index.csv` first, or write to a separate `--output-root`.
+- `--log-level` 支援 `DEBUG|INFO|WARNING|ERROR`（預設 `INFO`）。
 - `collect_grade_a.py` 需要同時存在 `conv_<id>.analysis.json` 與對應 `conv_<id>.md`；若缺少 `.md` 會略過該筆並輸出警告。
 
 ## Privacy/Safety

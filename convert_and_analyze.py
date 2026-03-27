@@ -3,6 +3,7 @@ import argparse
 import csv
 import hashlib
 import json
+import logging
 import os
 import re
 import socket
@@ -33,6 +34,38 @@ MARKER_KEYS = [
     "no_action_steps",
 ]
 
+INDEX_FIELDS = [
+    "id",
+    "title",
+    "source",
+    "md_file",
+    "analysis_file",
+    "route_recommendation",
+    "initial_route_recommendation",
+    "final_route_recommendation",
+    "calibration_applied",
+    "calibration_confidence",
+    "verdict",
+    "valuable_residual_count",
+    "next_steps_count",
+    "primary_text",
+    "summary",
+    "tags",
+    "status",
+    "error",
+]
+
+MODEL_PRICING_USD_PER_1M: Dict[str, Dict[str, Tuple[float, float]]] = {
+    "openai": {
+        "gpt-4.1-mini": (0.40, 1.60),
+    },
+    "anthropic": {
+        "claude-sonnet-4-6": (3.00, 15.00),
+    },
+}
+
+logger = logging.getLogger(__name__)
+
 
 def load_marker_lexicon(config_path: Optional[Path] = None) -> Dict[str, Dict[str, List[str]]]:
     path = config_path or (Path(__file__).resolve().parent / MARKER_CONFIG_BASENAME)
@@ -41,7 +74,7 @@ def load_marker_lexicon(config_path: Optional[Path] = None) -> Dict[str, Dict[st
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        print(f"[warn] failed to load marker config: {path}", file=sys.stderr, flush=True)
+        logger.warning("failed to load marker config: %s", path)
         return {}
     if not isinstance(raw, dict):
         return {}
@@ -110,7 +143,96 @@ def marker_values(
 def _progress(idx: int, total: int, label: str, title: str) -> None:
     width = len(str(total))
     short_title = title[:60] + "…" if len(title) > 60 else title
-    print(f"[{idx:{width}d}/{total}] {label:<10} {short_title}", flush=True)
+    logger.info("[%*d/%d] %-10s %s", width, idx, total, label, short_title)
+
+
+def setup_logging(log_level: str) -> None:
+    level = getattr(logging, log_level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%SZ",
+        stream=sys.stdout,
+    )
+
+
+class IndexManager:
+    def __init__(self, index_path: Path):
+        self.index_path = index_path
+        self.lock = threading.Lock()
+        self.rows_by_id: Dict[str, Dict[str, Any]] = {}
+        self.row_order: List[str] = []
+        self._load_existing()
+
+    def _load_existing(self) -> None:
+        if not self.index_path.exists():
+            return
+        with self.index_path.open("r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                row_id = row.get("id", "")
+                if not row_id:
+                    continue
+                normalized = {field: row.get(field, "") for field in INDEX_FIELDS}
+                self.rows_by_id[row_id] = normalized
+                if row_id not in self.row_order:
+                    self.row_order.append(row_id)
+
+    def upsert(self, row: Dict[str, Any]) -> None:
+        row_id = str(row.get("id", "")).strip()
+        if not row_id:
+            return
+        serialized = {
+            field: ("" if row.get(field) is None else row.get(field, ""))
+            for field in INDEX_FIELDS
+        }
+        serialized["tags"] = (
+            ";".join(serialized["tags"])
+            if isinstance(serialized.get("tags"), list)
+            else serialized.get("tags", "")
+        )
+        with self.lock:
+            if row_id not in self.rows_by_id:
+                self.row_order.append(row_id)
+            self.rows_by_id[row_id] = serialized
+
+    def flush(self) -> None:
+        with self.lock:
+            rows = [self.rows_by_id[row_id] for row_id in self.row_order if row_id in self.rows_by_id]
+        with self.index_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=INDEX_FIELDS)
+            writer.writeheader()
+            writer.writerows(rows)
+
+
+def estimate_api_calls(num_jobs: int, analysis_schema: str, second_pass_ratio: float) -> Tuple[int, int]:
+    if num_jobs <= 0:
+        return 0, 0
+    if analysis_schema != "salvage":
+        return num_jobs, num_jobs
+    extra = int(round(num_jobs * max(0.0, min(second_pass_ratio, 1.0))))
+    return num_jobs, num_jobs + extra
+
+
+def estimate_cost_range(
+    provider: str,
+    model: str,
+    min_calls: int,
+    max_calls: int,
+    input_tokens: int,
+    output_tokens: int,
+    price_input_per_1m: Optional[float],
+    price_output_per_1m: Optional[float],
+) -> Optional[Tuple[float, float]]:
+    in_price = price_input_per_1m
+    out_price = price_output_per_1m
+    if in_price is None or out_price is None:
+        model_price = MODEL_PRICING_USD_PER_1M.get(provider, {}).get(model)
+        if model_price is None:
+            return None
+        in_price, out_price = model_price
+    per_call = ((input_tokens * in_price) + (output_tokens * out_price)) / 1_000_000
+    return min_calls * per_call, max_calls * per_call
 
 
 @dataclass
@@ -1121,10 +1243,12 @@ def analyze_conversation(
                         retry_after = 0
                 if i < retries:
                     wait_seconds = max(retry_after, 2**i)
-                    print(
-                        f"[retry] 429 rate limited: conv={conv.id} wait={wait_seconds}s attempt={i + 1}/{retries + 1}",
-                        file=sys.stderr,
-                        flush=True,
+                    logger.warning(
+                        "[retry] 429 rate limited: conv=%s wait=%ss attempt=%s/%s",
+                        conv.id,
+                        wait_seconds,
+                        i + 1,
+                        retries + 1,
                     )
                     time.sleep(wait_seconds)
                     continue
@@ -1132,11 +1256,7 @@ def analyze_conversation(
             last_error = f"network_timeout:{e}"
         except json.JSONDecodeError as e:
             last_error = f"json_decode_error:{e}"
-            print(
-                f"[skip] JSON parse failed: conv={conv.id} reason={e}",
-                file=sys.stderr,
-                flush=True,
-            )
+            logger.warning("[skip] JSON parse failed: conv=%s reason=%s", conv.id, e)
             return failed_analysis_result(analysis_schema=analysis_schema, error=last_error)
         except Exception as e:
             last_error = str(e)
@@ -1160,43 +1280,6 @@ def format_run_stats(stats: Dict[str, int], route_counts: Dict[str, int]) -> str
         f"analysis_failed={stats.get('analysis_failed', 0)} "
         f"routes[{route_summary}]"
     )
-def write_index_row(index_path: Path, row: Dict[str, Any], lock: threading.Lock) -> None:
-    fields = [
-        "id",
-        "title",
-        "source",
-        "md_file",
-        "analysis_file",
-        "route_recommendation",
-        "initial_route_recommendation",
-        "final_route_recommendation",
-        "calibration_applied",
-        "calibration_confidence",
-        "verdict",
-        "valuable_residual_count",
-        "next_steps_count",
-        "primary_text",
-        "summary",
-        "tags",
-        "status",
-        "error",
-    ]
-    with lock:
-        exists = index_path.exists()
-        with index_path.open("a", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=fields)
-            if not exists:
-                w.writeheader()
-            w.writerow(
-                {
-                    **row,
-                    "tags": ";".join(row.get("tags", []))
-                    if isinstance(row.get("tags"), list)
-                    else row.get("tags", ""),
-                }
-            )
-
-
 def main() -> int:
     p = argparse.ArgumentParser(
         description="Convert official conversation exports to markdown and batch-analyze via LLM."
@@ -1223,18 +1306,32 @@ def main() -> int:
         "--marker-config",
         default=str(Path(__file__).resolve().parent / MARKER_CONFIG_BASENAME),
     )
+    p.add_argument("--dry-run", action="store_true", help="Estimate API call count and cost only.")
+    p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    p.add_argument("--estimate-input-tokens", type=int, default=2500)
+    p.add_argument("--estimate-output-tokens", type=int, default=500)
+    p.add_argument(
+        "--estimate-second-pass-ratio",
+        type=float,
+        default=0.25,
+        help="Estimated fraction of salvage jobs that trigger second-pass adjudication.",
+    )
+    p.add_argument("--price-input-per-1m", type=float)
+    p.add_argument("--price-output-per-1m", type=float)
     args = p.parse_args()
 
-    if not args.skip_analysis and not args.model:
+    setup_logging(args.log_level)
+
+    if not args.skip_analysis and not args.dry_run and not args.model:
         p.error("--model is required unless --skip-analysis is used")
 
     api_key = ""
-    if not args.skip_analysis:
+    if not args.skip_analysis and not args.dry_run:
         _default_env = "ANTHROPIC_API_KEY" if args.provider == "anthropic" else "OPENAI_API_KEY"
         api_key_env = args.api_key_env if args.api_key_env is not None else _default_env
         api_key = os.getenv(api_key_env, "")
         if not api_key:
-            print(f"Missing API key env: {api_key_env}", file=sys.stderr)
+            logger.error("Missing API key env: %s", api_key_env)
             return 2
 
     input_path = Path(args.input)
@@ -1252,7 +1349,7 @@ def main() -> int:
 
     index_path = out_root / "index.csv"
     total = len(conversations)
-    print(f"Loaded {total} conversations → {out_root}", flush=True)
+    logger.info("Loaded %d conversations -> %s", total, out_root)
 
     stats = {
         "total": total,
@@ -1262,7 +1359,7 @@ def main() -> int:
         "analysis_failed": 0,
     }
     route_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
-    index_lock = threading.Lock()
+    index_manager = IndexManager(index_path)
 
     jobs = []
     for n, conv in enumerate(conversations, start=1):
@@ -1272,13 +1369,13 @@ def main() -> int:
         md_path = out_root / md_name
         an_path = out_root / an_name
 
-        md_path.write_text(render_markdown(conv), encoding="utf-8")
+        if not args.dry_run:
+            md_path.write_text(render_markdown(conv), encoding="utf-8")
 
         if args.skip_analysis:
             stats["converted"] += 1
             _progress(n, total, "converted", conv.title)
-            write_index_row(
-                index_path,
+            index_manager.upsert(
                 {
                     "id": conv.id,
                     "title": conv.title,
@@ -1298,16 +1395,14 @@ def main() -> int:
                     "tags": [],
                     "status": "converted",
                     "error": "",
-                },
-                lock=index_lock,
+                }
             )
             continue
 
         if args.resume and an_path.exists() and not args.force:
             stats["skipped"] += 1
             _progress(n, total, "skipped", conv.title)
-            write_index_row(
-                index_path,
+            index_manager.upsert(
                 {
                     "id": conv.id,
                     "title": conv.title,
@@ -1327,12 +1422,47 @@ def main() -> int:
                     "tags": [],
                     "status": "skipped",
                     "error": "",
-                },
-                lock=index_lock,
+                }
             )
             continue
 
         jobs.append((conv, an_path, md_name, an_name))
+
+    min_calls, max_calls = estimate_api_calls(
+        num_jobs=len(jobs),
+        analysis_schema=args.analysis_schema,
+        second_pass_ratio=args.estimate_second_pass_ratio,
+    )
+
+    if args.dry_run:
+        logger.info("Dry run only. No files or API calls will be made.")
+        logger.info(
+            "Estimated API calls: min=%d max=%d (jobs=%d schema=%s)",
+            min_calls,
+            max_calls,
+            len(jobs),
+            args.analysis_schema,
+        )
+        cost_range = estimate_cost_range(
+            provider=args.provider,
+            model=args.model or "",
+            min_calls=min_calls,
+            max_calls=max_calls,
+            input_tokens=args.estimate_input_tokens,
+            output_tokens=args.estimate_output_tokens,
+            price_input_per_1m=args.price_input_per_1m,
+            price_output_per_1m=args.price_output_per_1m,
+        )
+        if cost_range is None:
+            logger.warning(
+                "Cost estimate unavailable: missing pricing for provider=%s model=%s. "
+                "Set --price-input-per-1m and --price-output-per-1m to override.",
+                args.provider,
+                args.model,
+            )
+        else:
+            logger.info("Estimated cost (USD): min=%.4f max=%.4f", cost_range[0], cost_range[1])
+        return 0
 
     if not args.skip_analysis:
         with ThreadPoolExecutor(max_workers=max(1, args.max_concurrency)) as ex:
@@ -1361,11 +1491,7 @@ def main() -> int:
                 except RuntimeError as e:
                     if str(e) == "auth_failed_401":
                         auth_failed = True
-                        print(
-                            "Authentication failed (HTTP 401). Aborting remaining tasks.",
-                            file=sys.stderr,
-                            flush=True,
-                        )
+                        logger.error("Authentication failed (HTTP 401). Aborting remaining tasks.")
                         ex.shutdown(wait=False, cancel_futures=True)
                         break
                     raise
@@ -1389,8 +1515,7 @@ def main() -> int:
                     if args.analysis_schema == "salvage"
                     else result.get("summary", "")
                 )
-                write_index_row(
-                    index_path,
+                index_manager.upsert(
                     {
                         "route_recommendation": result.get("route_recommendation", ""),
                         "initial_route_recommendation": result.get(
@@ -1418,16 +1543,20 @@ def main() -> int:
                         "tags": result.get("tags", []),
                         "status": result.get("status", "unknown"),
                         "error": result.get("error", ""),
-                    },
-                    lock=index_lock,
+                    }
                 )
             if auth_failed:
+                index_manager.flush()
                 return 2
 
-    print(format_run_stats(stats, route_counts), flush=True)
-    print(
-        f"Done at {iso_now()}. conversations={len(conversations)} "
-        f"skip_analysis={args.skip_analysis} analysis_schema={args.analysis_schema}"
+    index_manager.flush()
+    logger.info(format_run_stats(stats, route_counts))
+    logger.info(
+        "Done at %s. conversations=%d skip_analysis=%s analysis_schema=%s",
+        iso_now(),
+        len(conversations),
+        args.skip_analysis,
+        args.analysis_schema,
     )
     return 0
 
