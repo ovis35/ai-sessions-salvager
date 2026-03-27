@@ -179,6 +179,8 @@ Seeing more `C/D` than earlier versions is expected behavior, not a bug.
 - `--provider` 支援 `openai`（預設）和 `anthropic`；`--api-key-env` 預設會依 provider 自動選擇對應的環境變數名稱。
 - `--model` is required unless `--skip-analysis` is used.
 - `--analysis-schema` supports `default|salvage` (default: `default`).
+- `--language` 支援 `auto|zh|en`（預設 `auto`）。`auto` 會依對話內容自動推斷語系，供 salvage semantic markers 使用。
+- `--marker-config` 可指定 marker 詞彙 YAML（預設 `./marker_lexicon.yaml`），可外部化調整不同語系詞彙表。
 - If `--resume` is enabled and analysis file exists, that conversation is skipped unless `--force` is provided.
 - `--sample N` 可只處理前 N 筆對話（方便抽樣測試流程）。
 - For a clean one-off run, clear/delete old `index.csv` first, or write to a separate `--output-root`.

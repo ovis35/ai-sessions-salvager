@@ -547,6 +547,24 @@ class CallLLMProviderTests(unittest.TestCase):
             )
         self.assertEqual(result, {"answer": 42})
 
+    def test_externalized_markers_support_english_criterion(self):
+        marker_set = ca.build_marker_set("en")
+        score = ca.residual_asset_strength(
+            "Launch criterion: KPI threshold at CAC < 30", marker_set=marker_set
+        )
+        self.assertGreaterEqual(score, 2)
+
+    def test_auto_language_detection_uses_multi_marker_set(self):
+        conv = ca.NormalizedConversation(
+            id="lang1",
+            source="chatgpt",
+            title="English conversation",
+            created_at=None,
+            updated_at=None,
+            messages=[ca.NormalizedMessage(role="user", content="Define a launch framework")],
+        )
+        self.assertEqual(ca.resolve_analysis_language("auto", conv=conv), "multi")
+
 
 if __name__ == "__main__":
     unittest.main()
