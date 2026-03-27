@@ -984,6 +984,21 @@ def analyze_conversation(
     return failed_analysis_result(analysis_schema=analysis_schema, error=last_error)
 
 
+
+
+def format_run_stats(stats: Dict[str, int], route_counts: Dict[str, int]) -> str:
+    route_summary = ", ".join(
+        [f"{route}={route_counts.get(route, 0)}" for route in ["A", "B", "C", "D"]]
+    )
+    return (
+        "Run stats: "
+        f"total={stats.get('total', 0)} "
+        f"converted={stats.get('converted', 0)} "
+        f"skipped={stats.get('skipped', 0)} "
+        f"analysis_ok={stats.get('analysis_ok', 0)} "
+        f"analysis_failed={stats.get('analysis_failed', 0)} "
+        f"routes[{route_summary}]"
+    )
 def write_index_row(index_path: Path, row: Dict[str, Any]) -> None:
     exists = index_path.exists()
     fields = [
@@ -1071,6 +1086,15 @@ def main() -> int:
     total = len(conversations)
     print(f"Loaded {total} conversations → {out_root}", flush=True)
 
+    stats = {
+        "total": total,
+        "converted": 0,
+        "skipped": 0,
+        "analysis_ok": 0,
+        "analysis_failed": 0,
+    }
+    route_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
+
     jobs = []
     for n, conv in enumerate(conversations, start=1):
         sid = safe_id(conv.id)
@@ -1082,6 +1106,7 @@ def main() -> int:
         md_path.write_text(render_markdown(conv), encoding="utf-8")
 
         if args.skip_analysis:
+            stats["converted"] += 1
             _progress(n, total, "converted", conv.title)
             write_index_row(
                 index_path,
@@ -1109,6 +1134,7 @@ def main() -> int:
             continue
 
         if args.resume and an_path.exists() and not args.force:
+            stats["skipped"] += 1
             _progress(n, total, "skipped", conv.title)
             write_index_row(
                 index_path,
@@ -1159,9 +1185,13 @@ def main() -> int:
                 result = fut.result()
                 status = result.get("status", "unknown")
                 if status == "ok":
+                    stats["analysis_ok"] += 1
                     route = result.get("route_recommendation", "")
+                    if route in route_counts:
+                        route_counts[route] += 1
                     label = f"ok route={route}" if route else "ok"
                 else:
+                    stats["analysis_failed"] += 1
                     label = f"{status}"
                 _progress(n_done, total, label, conv.title)
                 an_path.write_text(
@@ -1205,6 +1235,7 @@ def main() -> int:
                     },
                 )
 
+    print(format_run_stats(stats, route_counts), flush=True)
     print(
         f"Done at {iso_now()}. conversations={len(conversations)} "
         f"skip_analysis={args.skip_analysis} analysis_schema={args.analysis_schema}"

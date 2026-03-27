@@ -394,6 +394,24 @@ class SalvageLogicTests(unittest.TestCase):
         }
         self.assertEqual(ca.infer_format(data), "claude")
 
+
+    def test_format_run_stats(self):
+        stats = {
+            "total": 3,
+            "converted": 1,
+            "skipped": 1,
+            "analysis_ok": 1,
+            "analysis_failed": 0,
+        }
+        route_counts = {"A": 0, "B": 1, "C": 0, "D": 0}
+        out = ca.format_run_stats(stats, route_counts)
+        self.assertIn("Run stats:", out)
+        self.assertIn("total=3", out)
+        self.assertIn("converted=1", out)
+        self.assertIn("skipped=1", out)
+        self.assertIn("analysis_ok=1", out)
+        self.assertIn("routes[A=0, B=1, C=0, D=0]", out)
+
     def test_cli_sample_resume_force_skip_analysis(self):
         data = [
             {
@@ -430,6 +448,9 @@ class SalvageLogicTests(unittest.TestCase):
             cp = subprocess.run(cmd, capture_output=True, text=True, check=False)
             self.assertEqual(cp.returncode, 0, cp.stderr)
             self.assertTrue((out_path / "index.csv").exists())
+            self.assertIn("Run stats:", cp.stdout)
+            self.assertIn("converted=1", cp.stdout)
+            self.assertIn("analysis_ok=0", cp.stdout)
 
 
 class CallLLMProviderTests(unittest.TestCase):
