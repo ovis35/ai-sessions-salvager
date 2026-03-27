@@ -5,8 +5,11 @@ import hashlib
 import json
 import os
 import re
+import socket
 import sys
+import threading
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -977,6 +980,37 @@ def analyze_conversation(
                     )
                 return {"schema": analysis_schema, "status": "ok", **finalized}
             last_error = reason
+        except urllib.error.HTTPError as e:
+            last_error = f"http_{e.code}"
+            if e.code == 401:
+                raise RuntimeError("auth_failed_401") from e
+            if e.code == 429:
+                retry_after_raw = e.headers.get("Retry-After") if e.headers else None
+                retry_after = 0
+                if retry_after_raw:
+                    try:
+                        retry_after = int(retry_after_raw)
+                    except ValueError:
+                        retry_after = 0
+                if i < retries:
+                    wait_seconds = max(retry_after, 2**i)
+                    print(
+                        f"[retry] 429 rate limited: conv={conv.id} wait={wait_seconds}s attempt={i + 1}/{retries + 1}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
+            last_error = f"network_timeout:{e}"
+        except json.JSONDecodeError as e:
+            last_error = f"json_decode_error:{e}"
+            print(
+                f"[skip] JSON parse failed: conv={conv.id} reason={e}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return failed_analysis_result(analysis_schema=analysis_schema, error=last_error)
         except Exception as e:
             last_error = str(e)
         if i < retries:
@@ -999,8 +1033,7 @@ def format_run_stats(stats: Dict[str, int], route_counts: Dict[str, int]) -> str
         f"analysis_failed={stats.get('analysis_failed', 0)} "
         f"routes[{route_summary}]"
     )
-def write_index_row(index_path: Path, row: Dict[str, Any]) -> None:
-    exists = index_path.exists()
+def write_index_row(index_path: Path, row: Dict[str, Any], lock: threading.Lock) -> None:
     fields = [
         "id",
         "title",
@@ -1021,18 +1054,20 @@ def write_index_row(index_path: Path, row: Dict[str, Any]) -> None:
         "status",
         "error",
     ]
-    with index_path.open("a", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        if not exists:
-            w.writeheader()
-        w.writerow(
-            {
-                **row,
-                "tags": ";".join(row.get("tags", []))
-                if isinstance(row.get("tags"), list)
-                else row.get("tags", ""),
-            }
-        )
+    with lock:
+        exists = index_path.exists()
+        with index_path.open("a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            if not exists:
+                w.writeheader()
+            w.writerow(
+                {
+                    **row,
+                    "tags": ";".join(row.get("tags", []))
+                    if isinstance(row.get("tags"), list)
+                    else row.get("tags", ""),
+                }
+            )
 
 
 def main() -> int:
@@ -1094,6 +1129,7 @@ def main() -> int:
         "analysis_failed": 0,
     }
     route_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
+    index_lock = threading.Lock()
 
     jobs = []
     for n, conv in enumerate(conversations, start=1):
@@ -1130,6 +1166,7 @@ def main() -> int:
                     "status": "converted",
                     "error": "",
                 },
+                lock=index_lock,
             )
             continue
 
@@ -1158,6 +1195,7 @@ def main() -> int:
                     "status": "skipped",
                     "error": "",
                 },
+                lock=index_lock,
             )
             continue
 
@@ -1179,10 +1217,23 @@ def main() -> int:
             }
 
             n_done = total - len(jobs)
+            auth_failed = False
             for fut in as_completed(fut_map):
                 n_done += 1
                 conv, an_path, md_name, an_name = fut_map[fut]
-                result = fut.result()
+                try:
+                    result = fut.result()
+                except RuntimeError as e:
+                    if str(e) == "auth_failed_401":
+                        auth_failed = True
+                        print(
+                            "Authentication failed (HTTP 401). Aborting remaining tasks.",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        ex.shutdown(wait=False, cancel_futures=True)
+                        break
+                    raise
                 status = result.get("status", "unknown")
                 if status == "ok":
                     stats["analysis_ok"] += 1
@@ -1233,7 +1284,10 @@ def main() -> int:
                         "status": result.get("status", "unknown"),
                         "error": result.get("error", ""),
                     },
+                    lock=index_lock,
                 )
+            if auth_failed:
+                return 2
 
     print(format_run_stats(stats, route_counts), flush=True)
     print(
